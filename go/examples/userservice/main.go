@@ -11,21 +11,19 @@ import (
 	"time"
 
 	"github.com/pbdeuchler/grpcq/go/adapters/memory"
-	"github.com/pbdeuchler/grpcq/go/core"
-	grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
+	"github.com/pbdeuchler/grpcq/go/grpcq"
 	userpb "github.com/pbdeuchler/grpcq/go/examples/userservice/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
-	queueName   = "user-service-queue"
-	serviceName = "userservice.UserService"
-	grpcAddr    = "localhost:50051"
+	queueName = "user-service-queue"
+	grpcAddr  = "localhost:50051"
 )
 
 var (
-	mode = flag.String("mode", "demo", "Mode to run: sync-server, sync-client, async-worker, async-client, or demo (runs worker+client together)")
+	mode = flag.String("mode", "demo", "Mode to run: sync-server, sync-client, async-server, async-client, or demo")
 )
 
 func main() {
@@ -45,17 +43,17 @@ func main() {
 	case "sync-client":
 		log.Println("Starting in SYNC CLIENT mode (traditional gRPC)")
 		runSyncClient(ctx)
-	case "async-worker":
-		log.Println("Starting in ASYNC WORKER mode (grpcq)")
-		runAsyncWorker(ctx, sigCh)
+	case "async-server":
+		log.Println("Starting in ASYNC SERVER mode (grpcq)")
+		runAsyncServer(ctx, sigCh)
 	case "async-client":
 		log.Println("Starting in ASYNC CLIENT mode (grpcq)")
 		runAsyncClient(ctx)
 	case "demo":
-		log.Println("Starting in DEMO mode (async worker + client)")
+		log.Println("Starting in DEMO mode (async server + client)")
 		runDemo(ctx, sigCh)
 	default:
-		log.Fatalf("Unknown mode: %s. Use: sync-server, sync-client, async-worker, async-client, or demo", *mode)
+		log.Fatalf("Unknown mode: %s", *mode)
 	}
 }
 
@@ -64,7 +62,7 @@ func runSyncServer(ctx context.Context, sigCh chan os.Signal) {
 	// Create service implementation
 	svc := NewUserService()
 
-	// Create gRPC server
+	// Create gRPC server - uses standard gRPC registration
 	grpcServer := grpc.NewServer()
 	userpb.RegisterUserServiceServer(grpcServer, svc)
 
@@ -91,7 +89,7 @@ func runSyncServer(ctx context.Context, sigCh chan os.Signal) {
 
 // runSyncClient calls the traditional gRPC server.
 func runSyncClient(ctx context.Context) {
-	// Connect to gRPC server
+	// Connect to gRPC server - uses standard gRPC client
 	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
@@ -122,81 +120,59 @@ func runSyncClient(ctx context.Context) {
 			continue
 		}
 		log.Printf("Created user: id=%s name=%s email=%s", resp.UserId, resp.Name, resp.Email)
-
-		// Also test GetUser
-		getResp, err := client.GetUser(ctx, &userpb.GetUserRequest{
-			UserId: resp.UserId,
-		})
-		if err != nil {
-			log.Printf("GetUser failed: %v", err)
-			continue
-		}
-		log.Printf("Retrieved user: id=%s name=%s email=%s", getResp.UserId, getResp.Name, getResp.Email)
 	}
 
 	log.Println("Sync client completed")
 }
 
-// runAsyncWorker starts a grpcq worker that processes messages.
-func runAsyncWorker(ctx context.Context, sigCh chan os.Signal) {
+// runAsyncServer starts a grpcq server that processes messages.
+// Notice how similar this is to the sync version!
+func runAsyncServer(ctx context.Context, sigCh chan os.Signal) {
 	// Create adapter
 	adapter := memory.NewAdapter(1000)
 
-	// Create service implementation (same as gRPC!)
+	// Create service implementation (same code as gRPC!)
 	svc := NewUserService()
 
-	// Create registry
-	registry := core.NewRegistry()
+	// Register service with grpcq - uses generated registration function
+	server := userpb.RegisterUserServiceQServer(
+		adapter,
+		svc,
+		grpcq.WithQueueName(queueName),
+		grpcq.WithConcurrency(5),
+		grpcq.WithPollInterval(100),
+	)
 
-	// Register handlers using the grpc adapter
-	// This bridges the gRPC server implementation to grpcq
-	registry.Register(serviceName, "CreateUser", grpcadapter.WrapUnaryMethod(
-		svc.CreateUser,
-		func() *userpb.CreateUserRequest { return &userpb.CreateUserRequest{} },
-	))
+	log.Println("grpcq server started, waiting for messages...")
 
-	registry.Register(serviceName, "GetUser", grpcadapter.WrapUnaryMethod(
-		svc.GetUser,
-		func() *userpb.GetUserRequest { return &userpb.GetUserRequest{} },
-	))
-
-	// Create and start worker
-	config := core.DefaultWorkerConfig(queueName)
-	config.Concurrency = 5
-	config.PollIntervalMs = 100
-
-	worker := core.NewWorker(adapter, registry, config)
-
-	log.Println("Worker started, waiting for messages...")
-
-	// Start worker in goroutine
+	// Start server in goroutine
 	go func() {
-		if err := worker.Start(ctx); err != nil && err != context.Canceled {
-			log.Printf("Worker error: %v", err)
+		if err := server.Start(ctx); err != nil && err != context.Canceled {
+			log.Printf("Server error: %v", err)
 		}
 	}()
 
 	// Wait for shutdown signal
 	<-sigCh
-	log.Println("Shutting down worker...")
+	log.Println("Shutting down grpcq server...")
 }
 
-// runAsyncClient publishes messages using the gRPC client interface.
+// runAsyncClient publishes messages using the grpcq client.
+// Notice how similar this is to the sync version!
 func runAsyncClient(ctx context.Context) {
-	// Create adapter and publisher
+	// Create adapter
 	adapter := memory.NewAdapter(1000)
-	publisher := core.NewPublisher(adapter, "example-client")
 
-	// Create async client connection
-	clientAdapter := grpcadapter.NewClientAdapter(publisher, queueName)
+	// Create grpcq client - uses generated client constructor
+	client := userpb.NewUserServiceQClient(
+		adapter,
+		grpcq.WithClientQueueName(queueName),
+		grpcq.WithOriginator("example-client"),
+	)
 
-	// Create gRPC client using the async connection
-	// The client has the same interface as the synchronous version!
-	client := userpb.NewUserServiceClient(clientAdapter.Conn())
+	log.Println("Publishing CreateUser requests via grpcq...")
 
-	log.Println("Publishing CreateUser requests via gRPC client interface...")
-
-	// Make calls - they look identical to sync calls but are async!
+	// Make calls - same interface as gRPC client!
 	users := []struct {
 		name  string
 		email string
@@ -207,13 +183,13 @@ func runAsyncClient(ctx context.Context) {
 	}
 
 	for _, user := range users {
-		// This looks like a sync call but publishes to queue!
+		// Same method signature as gRPC!
 		_, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
 			Name:  user.name,
 			Email: user.email,
 		})
 		if err != nil {
-			log.Printf("Failed to publish CreateUser: %v", err)
+			log.Printf("Failed to publish: %v", err)
 			continue
 		}
 		log.Printf("Published CreateUser request for: %s", user.name)
@@ -223,47 +199,38 @@ func runAsyncClient(ctx context.Context) {
 	log.Println("Async client completed")
 }
 
-// runDemo runs both worker and client together (original example behavior).
+// runDemo runs both server and client together.
 func runDemo(ctx context.Context, sigCh chan os.Signal) {
-	// Create adapter (shared between worker and publisher)
+	// Create shared adapter
 	adapter := memory.NewAdapter(1000)
 
-	// Start worker
+	// Start async server
 	go func() {
 		svc := NewUserService()
-		registry := core.NewRegistry()
+		server := userpb.RegisterUserServiceQServer(
+			adapter,
+			svc,
+			grpcq.WithQueueName(queueName),
+			grpcq.WithConcurrency(5),
+			grpcq.WithPollInterval(100),
+		)
 
-		// Register with the new adapter
-		registry.Register(serviceName, "CreateUser", grpcadapter.WrapUnaryMethod(
-			svc.CreateUser,
-			func() *userpb.CreateUserRequest { return &userpb.CreateUserRequest{} },
-		))
-
-		registry.Register(serviceName, "GetUser", grpcadapter.WrapUnaryMethod(
-			svc.GetUser,
-			func() *userpb.GetUserRequest { return &userpb.GetUserRequest{} },
-		))
-
-		config := core.DefaultWorkerConfig(queueName)
-		config.Concurrency = 5
-		config.PollIntervalMs = 100
-
-		worker := core.NewWorker(adapter, registry, config)
-		log.Println("Worker started, waiting for messages...")
-
-		if err := worker.Start(ctx); err != nil && err != context.Canceled {
-			log.Printf("Worker error: %v", err)
+		log.Println("Server started, waiting for messages...")
+		if err := server.Start(ctx); err != nil && err != context.Canceled {
+			log.Printf("Server error: %v", err)
 		}
-		log.Println("Worker stopped")
+		log.Println("Server stopped")
 	}()
 
-	// Give worker time to start
+	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Run publisher using gRPC client interface
-	publisher := core.NewPublisher(adapter, "demo-client")
-	clientAdapter := grpcadapter.NewClientAdapter(publisher, queueName)
-	client := userpb.NewUserServiceClient(clientAdapter.Conn())
+	// Create client and publish messages
+	client := userpb.NewUserServiceQClient(
+		adapter,
+		grpcq.WithClientQueueName(queueName),
+		grpcq.WithOriginator("demo-client"),
+	)
 
 	log.Println("Publishing user creation requests...")
 
@@ -299,6 +266,6 @@ func runDemo(ctx context.Context, sigCh chan os.Signal) {
 		log.Println("Demo completed")
 	}
 
-	// Give worker time to process remaining messages
+	// Give server time to process remaining messages
 	time.Sleep(1 * time.Second)
 }

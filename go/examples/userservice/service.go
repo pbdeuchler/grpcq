@@ -12,12 +12,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// UserService implements the UserServiceServer interface.
+// UserService implements both gRPC and grpcq UserServiceServer interfaces.
 // This same implementation works for both synchronous gRPC and asynchronous grpcq.
 type UserService struct {
-	userpb.UnimplementedUserServiceServer
-	mu    sync.RWMutex
-	users map[string]*userpb.GetUserResponse
+	userpb.UnimplementedUserServiceServer // for gRPC compatibility
+	mu                                    sync.RWMutex
+	users                                 map[string]*userpb.GetUserResponse
 }
 
 // NewUserService creates a new UserService instance.

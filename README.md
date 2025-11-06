@@ -8,12 +8,12 @@ grpcq enables you to convert traditional synchronous gRPC services into asynchro
 
 ### Key Features
 
+- **Protocol Buffers Native**: Generate grpcq code with `protoc-gen-grpcq` plugin
+- **gRPC Compatible**: Same service implementation works for both sync (gRPC) and async (grpcq)
 - **Queue Agnostic**: Pluggable adapters for SQS, Kafka, RabbitMQ, Redis Streams, and more
-- **Multi-Language**: Shared protocol enables cross-language communication
 - **Type-Safe**: Uses Protocol Buffers for message serialization
 - **Production-Ready**: Built-in retry logic, error handling, and graceful shutdown
 - **Testable**: Includes in-memory adapter for testing
-- **gRPC Interoperable**: Use the same service implementation for both sync (gRPC) and async (grpcq) modes
 
 ### When to Use grpcq
 
@@ -156,90 +156,75 @@ adapter, err := sqsadapter.NewAdapter(sqsadapter.Config{
 publisher := core.NewPublisher(adapter, "my-service")
 ```
 
-## gRPC Interoperability
+## Code Generation
 
-grpcq provides seamless interoperability with standard gRPC services, allowing you to write your service implementation once and use it in both synchronous (gRPC) and asynchronous (queue-based) modes.
+grpcq provides a `protoc` plugin that generates client and server stubs from your Protocol Buffer definitions.
 
-### Server Side: Using gRPC Service Implementations
+### Generate Code
 
-Write your service implementation using the standard gRPC interface:
+```bash
+# Install the plugin
+go install github.com/pbdeuchler/grpcq/cmd/protoc-gen-grpcq@latest
+
+# Generate gRPC and grpcq code
+protoc --go_out=. --go_opt=paths=source_relative \
+       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+       --grpcq_out=. --grpcq_opt=paths=source_relative \
+       your_service.proto
+```
+
+### Write Your Service
+
+Your service implementation works for both gRPC and grpcq:
 
 ```go
-import (
-    userpb "your/proto/package"
-)
-
-// Implement the gRPC service interface
 type UserService struct {
     userpb.UnimplementedUserServiceServer
 }
 
 func (s *UserService) CreateUser(ctx context.Context, req *userpb.CreateUserRequest) (*userpb.CreateUserResponse, error) {
-    // Your implementation
+    // Same implementation for both!
     return &userpb.CreateUserResponse{...}, nil
 }
 ```
 
-**Option 1: Run as traditional gRPC server (synchronous)**
+### Server: Choose Your Mode
 
+**Synchronous (gRPC):**
 ```go
 grpcServer := grpc.NewServer()
 userpb.RegisterUserServiceServer(grpcServer, &UserService{})
-grpcServer.Serve(lis)
+grpcServer.Serve(listener)
 ```
 
-**Option 2: Run as grpcq worker (asynchronous)**
-
+**Asynchronous (grpcq):**
 ```go
-import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
-
-svc := &UserService{}
-registry := core.NewRegistry()
-
-// Wrap the gRPC method to work with grpcq
-registry.Register("userservice.UserService", "CreateUser",
-    grpcadapter.WrapUnaryMethod(
-        svc.CreateUser,
-        func() *userpb.CreateUserRequest { return &userpb.CreateUserRequest{} },
-    ))
-
-worker := core.NewWorker(adapter, registry, config)
-worker.Start(ctx)
+adapter := memory.NewAdapter(1000)
+server := userpb.RegisterUserServiceQServer(
+    adapter,
+    &UserService{},
+    grpcq.WithQueueName("user-queue"),
+)
+server.Start(ctx)
 ```
 
-### Client Side: Using gRPC Client Interfaces
+### Client: Same Interface
 
-**Option 1: Traditional gRPC client (synchronous)**
-
+**Synchronous (gRPC):**
 ```go
 conn, _ := grpc.Dial("localhost:50051")
 client := userpb.NewUserServiceClient(conn)
-
-// Make synchronous call
-resp, err := client.CreateUser(ctx, &userpb.CreateUserRequest{...})
+resp, _ := client.CreateUser(ctx, req)
 ```
 
-**Option 2: grpcq client using same interface (asynchronous)**
-
+**Asynchronous (grpcq):**
 ```go
-import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
-
-publisher := core.NewPublisher(adapter, "my-service")
-clientAdapter := grpcadapter.NewClientAdapter(publisher, "user-queue")
-
-// Use the same client interface, but calls publish to queue!
-client := userpb.NewUserServiceClient(clientAdapter.Conn())
-client.CreateUser(ctx, &userpb.CreateUserRequest{...})  // Publishes to queue
+adapter := memory.NewAdapter(1000)
+client := userpb.NewUserServiceQClient(adapter, grpcq.WithClientQueueName("user-queue"))
+resp, _ := client.CreateUser(ctx, req)  // Fire-and-forget
 ```
 
-### Benefits
-
-- **Write Once, Deploy Anywhere**: Same service code works for both sync and async modes
-- **Gradual Migration**: Migrate from gRPC to queue-based architecture incrementally
-- **Testing Flexibility**: Test with sync gRPC in dev, deploy with queues in production
-- **Standard Tooling**: Use standard gRPC tooling (protoc, server reflection, etc.)
-
-See the [User Service Example](go/examples/userservice/) for a complete working demonstration.
+See the [User Service Example](go/examples/userservice/) and [Plugin Documentation](cmd/protoc-gen-grpcq/) for more details.
 
 ## Architecture
 
@@ -331,6 +316,8 @@ make clean
 
 ```
 grpcq/
+├── cmd/                        # Command-line tools
+│   └── protoc-gen-grpcq/       # Protoc plugin for code generation
 ├── proto/                      # Shared protocol definitions
 │   ├── message.proto           # Core message proto
 │   └── grpcq/                  # Generated Go code
@@ -340,9 +327,9 @@ grpcq/
 │   │   ├── registry.go         # Handler registry
 │   │   ├── publisher.go        # Message publisher
 │   │   └── worker.go           # Message worker
-│   ├── grpc/                   # gRPC interoperability
-│   │   ├── server.go           # Server adapter for gRPC services
-│   │   └── client.go           # Client adapter for gRPC clients
+│   ├── grpcq/                  # Runtime support for generated code
+│   │   ├── server.go           # Server implementation
+│   │   └── client.go           # Client implementation
 │   ├── adapters/               # Queue adapters
 │   │   ├── memory/             # In-memory (testing)
 │   │   ├── sqs/                # AWS SQS
@@ -414,8 +401,9 @@ See [implementation.md](implementation.md) for detailed implementation guide.
 - [x] Memory adapter
 - [x] SQS adapter
 - [x] Protocol documentation
-- [x] Basic examples
-- [x] gRPC interoperability (server and client adapters)
+- [x] protoc-gen-grpcq plugin for code generation
+- [x] gRPC-compatible server and client interfaces
+- [x] Complete userservice example
 
 ### v1.1 (Planned)
 
