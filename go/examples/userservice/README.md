@@ -1,50 +1,244 @@
 # User Service Example
 
-This example demonstrates how to use grpcq to convert a traditional gRPC service to an asynchronous queue-based architecture.
+This example demonstrates grpcq's gRPC interoperability - how to write a service implementation once and run it in both **synchronous (traditional gRPC)** and **asynchronous (queue-based)** modes.
 
-## What This Example Shows
+## Key Concept
 
-1. **Publisher Pattern**: How to publish gRPC method calls as messages to a queue
-2. **Worker Pattern**: How to consume and process messages using registered handlers
-3. **Handler Registration**: How to map topic/action pairs to handler functions
-4. **Message Processing**: Complete lifecycle from publish to acknowledgment
+The same service implementation code works for both:
+- Traditional gRPC server/client (synchronous, request-response)
+- grpcq worker/publisher (asynchronous, queue-based)
+
+This enables gradual migration, flexible testing, and deployment options without code changes.
 
 ## Running the Example
 
+The example supports multiple modes:
+
+### Demo Mode (Default)
+Runs both async worker and client together:
 ```bash
 cd go/examples/userservice
-go run main.go
+go run . -mode demo
 ```
 
-## Expected Output
+### Synchronous gRPC
+
+**Start the gRPC server:**
+```bash
+go run . -mode sync-server
+```
+
+**In another terminal, run the client:**
+```bash
+go run . -mode sync-client
+```
+
+### Asynchronous Queue-Based
+
+**Start the worker:**
+```bash
+go run . -mode async-worker
+```
+
+**In another terminal, run the publisher:**
+```bash
+go run . -mode async-client
+```
+
+## Architecture Overview
 
 ```
-Worker started, waiting for messages...
-Publishing user creation requests...
-Published CreateUser request for: Alice Johnson
-Processing CreateUser: name=Alice Johnson email=alice@example.com
-Successfully created user: Alice Johnson
-Published CreateUser request for: Bob Smith
-Processing CreateUser: name=Bob Smith email=bob@example.com
-Successfully created user: Bob Smith
-Published CreateUser request for: Charlie Brown
-Processing CreateUser: name=Charlie Brown email=charlie@example.com
-Successfully created user: Charlie Brown
-All messages published
-Example completed
-Worker stopped
+┌─────────────────────────────────────────────────────────────┐
+│                    UserService Implementation                │
+│          (Write once, use in both sync and async)           │
+└──────────────────┬──────────────────────┬───────────────────┘
+                   │                      │
+         ┌─────────▼─────────┐  ┌─────────▼──────────┐
+         │  Synchronous      │  │   Asynchronous     │
+         │   (gRPC)          │  │     (grpcq)        │
+         └─────────┬─────────┘  └─────────┬──────────┘
+                   │                      │
+         ┌─────────▼─────────┐  ┌─────────▼──────────┐
+         │  gRPC Server      │  │  grpcq Worker      │
+         │  grpc.NewServer() │  │  WrapUnaryMethod() │
+         └───────────────────┘  └────────────────────┘
 ```
 
 ## Code Walkthrough
 
-### 1. Setting Up the Adapter
+### 1. Service Implementation (service.go)
+
+The service implements the standard gRPC server interface:
 
 ```go
-// Create an in-memory adapter for this example
-adapter := memory.NewAdapter(1000)
+type UserService struct {
+    userpb.UnimplementedUserServiceServer
+    // ... fields ...
+}
+
+func (s *UserService) CreateUser(ctx context.Context, req *userpb.CreateUserRequest) (*userpb.CreateUserResponse, error) {
+    // Your business logic here
+    // This code is the same for both sync and async!
+    return &userpb.CreateUserResponse{...}, nil
+}
 ```
 
-For production, you would use the SQS adapter:
+**Key Point**: This is standard gRPC code. No queue-specific logic needed.
+
+### 2. Synchronous Mode (Traditional gRPC)
+
+**Server:**
+```go
+svc := NewUserService()
+
+// Standard gRPC server setup
+grpcServer := grpc.NewServer()
+userpb.RegisterUserServiceServer(grpcServer, svc)
+grpcServer.Serve(listener)
+```
+
+**Client:**
+```go
+conn, _ := grpc.Dial("localhost:50051")
+client := userpb.NewUserServiceClient(conn)
+
+// Synchronous call - waits for response
+resp, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
+    Name: "Alice",
+    Email: "alice@example.com",
+})
+// resp is available immediately
+```
+
+### 3. Asynchronous Mode (grpcq)
+
+**Worker (replaces gRPC server):**
+```go
+import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
+
+svc := NewUserService()  // Same service!
+
+registry := core.NewRegistry()
+
+// Wrap gRPC methods to work with queues
+registry.Register("userservice.UserService", "CreateUser",
+    grpcadapter.WrapUnaryMethod(
+        svc.CreateUser,  // Reuse the same method!
+        func() *userpb.CreateUserRequest { return &userpb.CreateUserRequest{} },
+    ))
+
+worker := core.NewWorker(adapter, registry, config)
+worker.Start(ctx)
+```
+
+**Publisher (replaces gRPC client):**
+```go
+import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
+
+publisher := core.NewPublisher(adapter, "my-service")
+clientAdapter := grpcadapter.NewClientAdapter(publisher, "user-queue")
+
+// Use the same gRPC client interface!
+client := userpb.NewUserServiceClient(clientAdapter.Conn())
+
+// Looks like sync call but publishes to queue (fire-and-forget)
+client.CreateUser(ctx, &userpb.CreateUserRequest{
+    Name: "Alice",
+    Email: "alice@example.com",
+})
+// Returns immediately, no response
+```
+
+## Comparison
+
+### Synchronous (gRPC)
+
+**Server:**
+```go
+grpcServer := grpc.NewServer()
+userpb.RegisterUserServiceServer(grpcServer, svc)
+grpcServer.Serve(lis)
+```
+
+**Client:**
+```go
+conn, _ := grpc.Dial("localhost:50051")
+client := userpb.NewUserServiceClient(conn)
+resp, err := client.CreateUser(ctx, req)  // Waits for response
+```
+
+### Asynchronous (grpcq)
+
+**Worker:**
+```go
+registry.Register("userservice.UserService", "CreateUser",
+    grpcadapter.WrapUnaryMethod(svc.CreateUser, newRequest))
+worker := core.NewWorker(adapter, registry, config)
+worker.Start(ctx)
+```
+
+**Publisher:**
+```go
+clientAdapter := grpcadapter.NewClientAdapter(publisher, "queue")
+client := userpb.NewUserServiceClient(clientAdapter.Conn())
+client.CreateUser(ctx, req)  // Fire-and-forget
+```
+
+## Key Differences
+
+| Aspect | Synchronous (gRPC) | Asynchronous (grpcq) |
+|--------|-------------------|---------------------|
+| Communication | Direct connection | Via message queue |
+| Response | Immediate | None (fire-and-forget) |
+| Retry | Client-side | Queue-level |
+| Scaling | Load balancer | Queue workers |
+| Backpressure | Connection limits | Queue depth |
+| Implementation | Standard gRPC | Same code + adapters |
+
+## Use Cases
+
+### When to Use Synchronous (gRPC)
+- Need immediate responses
+- Interactive APIs (REST, GraphQL gateways)
+- Real-time operations
+- Client needs to react to result
+
+### When to Use Asynchronous (grpcq)
+- Fire-and-forget operations
+- Background processing
+- High-volume data ingestion
+- Decouple service scaling
+- Built-in retry and DLQ
+- Services in different regions/networks
+
+## Benefits of Interoperability
+
+1. **Write Once, Deploy Anywhere**
+   - Single service implementation
+   - Choose deployment mode at runtime
+   - No code changes needed
+
+2. **Gradual Migration**
+   - Start with gRPC in dev
+   - Migrate to queues in production
+   - Or vice versa
+   - Mix and match per environment
+
+3. **Testing Flexibility**
+   - Test with fast sync calls
+   - Deploy with reliable async queues
+   - Same code, different modes
+
+4. **Standard Tooling**
+   - Use protoc for code generation
+   - Standard gRPC patterns
+   - Type-safe interfaces
+
+## Production Deployment
+
+### Using AWS SQS
+
+Replace the memory adapter with SQS:
 
 ```go
 import (
@@ -54,134 +248,48 @@ import (
 )
 
 cfg, _ := config.LoadDefaultConfig(ctx)
-client := sqs.NewFromConfig(cfg)
+sqsClient := sqs.NewFromConfig(cfg)
 
-adapter, err := sqsadapter.NewAdapter(sqsadapter.Config{
-    QueueURL: "https://sqs.us-east-1.amazonaws.com/123456789/my-queue",
-    Client:   client,
+adapter, _ := sqsadapter.NewAdapter(sqsadapter.Config{
+    QueueURL: "https://sqs.us-east-1.amazonaws.com/123456789/user-queue",
+    Client:   sqsClient,
 })
+
+// Use adapter with worker or publisher
+// Everything else stays the same!
 ```
 
-### 2. Registering Handlers (Worker Side)
+### Hybrid Deployment
+
+You can even run both modes simultaneously:
 
 ```go
-registry := core.NewRegistry()
-registry.Register(topic, "CreateUser", handleCreateUser)
-```
-
-The handler function signature:
-
-```go
-func handleCreateUser(ctx context.Context, msg *pb.Message) error {
-    // Deserialize the payload
-    var req userservice.CreateUserRequest
-    proto.Unmarshal(msg.Payload, &req)
-
-    // Process the request
-    // ...
-
-    return nil // or return error to nack
-}
-```
-
-### 3. Starting the Worker
-
-```go
-config := core.DefaultWorkerConfig(queueName)
-worker := core.NewWorker(adapter, registry, config)
-worker.Start(ctx)
-```
-
-### 4. Publishing Messages (Client Side)
-
-```go
-publisher := core.NewPublisher(adapter, "my-service")
-
-req := &userservice.CreateUserRequest{
-    Name:  "Alice",
-    Email: "alice@example.com",
-}
-
-publisher.Send(ctx, queueName, topic, "CreateUser", req, metadata)
-```
-
-## Migration from gRPC
-
-### Before (Traditional gRPC)
-
-**Server:**
-```go
-type userServiceServer struct {
-    pb.UnimplementedUserServiceServer
-}
-
-func (s *userServiceServer) CreateUser(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
-    // Implementation
-}
-
-// Start gRPC server
+// Serve sync requests on gRPC
 grpcServer := grpc.NewServer()
-pb.RegisterUserServiceServer(grpcServer, &userServiceServer{})
-```
+userpb.RegisterUserServiceServer(grpcServer, svc)
+go grpcServer.Serve(lis)
 
-**Client:**
-```go
-conn, _ := grpc.Dial("localhost:50051")
-client := pb.NewUserServiceClient(conn)
-resp, err := client.CreateUser(ctx, &CreateUserRequest{...})
-```
-
-### After (grpcq)
-
-**Worker (replaces Server):**
-```go
-registry := core.NewRegistry()
-registry.Register("userservice.UserService", "CreateUser", func(ctx context.Context, msg *pb.Message) error {
-    var req CreateUserRequest
-    proto.Unmarshal(msg.Payload, &req)
-    // Same implementation as before
-    return nil
-})
-
+// Also process async requests from queue
+registry.Register("userservice.UserService", "CreateUser",
+    grpcadapter.WrapUnaryMethod(svc.CreateUser, newRequest))
 worker := core.NewWorker(adapter, registry, config)
-worker.Start(ctx)
+go worker.Start(ctx)
+
+// Same service, serving both sync and async!
 ```
-
-**Publisher (replaces Client):**
-```go
-publisher := core.NewPublisher(adapter, "my-service")
-err := publisher.Send(ctx, queueName, "userservice.UserService", "CreateUser", &CreateUserRequest{...}, nil)
-// Note: No immediate response (async)
-```
-
-## Key Differences
-
-| Aspect | gRPC | grpcq |
-|--------|------|-------|
-| Communication | Synchronous | Asynchronous |
-| Response | Immediate | None (fire-and-forget) |
-| Retry | Client-side | Queue-level |
-| Scaling | Load balancer | Queue consumers |
-| Backpressure | Connection limits | Queue depth |
-
-## When to Use grpcq
-
-✅ **Good fit:**
-- Fire-and-forget operations
-- High-volume background tasks
-- Services that need to scale independently
-- Operations with built-in retry logic
-- Cross-language service communication
-
-❌ **Not recommended:**
-- Request-response patterns requiring immediate answers
-- Real-time interactive APIs
-- Operations requiring streaming
 
 ## Next Steps
 
-1. Try modifying the example to add more handlers
-2. Experiment with the SQS adapter
-3. Add error handling and retries
-4. Implement dead-letter queue handling
-5. Add metrics and observability
+1. Modify the service to add more methods
+2. Try deploying with SQS or another queue adapter
+3. Experiment with different worker configurations
+4. Add response handling (publish to response topics)
+5. Implement request-response patterns
+6. Add metrics and observability
+
+## Further Reading
+
+- [Main README](../../../README.md) - Full grpcq documentation
+- [Protocol Specification](../../../docs/protocol.md) - Message format details
+- [Core Package](../../core/) - Core abstractions and interfaces
+- [gRPC Adapters](../../grpc/) - Interoperability layer implementation

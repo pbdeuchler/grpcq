@@ -13,6 +13,7 @@ grpcq enables you to convert traditional synchronous gRPC services into asynchro
 - **Type-Safe**: Uses Protocol Buffers for message serialization
 - **Production-Ready**: Built-in retry logic, error handling, and graceful shutdown
 - **Testable**: Includes in-memory adapter for testing
+- **gRPC Interoperable**: Use the same service implementation for both sync (gRPC) and async (grpcq) modes
 
 ### When to Use grpcq
 
@@ -155,6 +156,91 @@ adapter, err := sqsadapter.NewAdapter(sqsadapter.Config{
 publisher := core.NewPublisher(adapter, "my-service")
 ```
 
+## gRPC Interoperability
+
+grpcq provides seamless interoperability with standard gRPC services, allowing you to write your service implementation once and use it in both synchronous (gRPC) and asynchronous (queue-based) modes.
+
+### Server Side: Using gRPC Service Implementations
+
+Write your service implementation using the standard gRPC interface:
+
+```go
+import (
+    userpb "your/proto/package"
+)
+
+// Implement the gRPC service interface
+type UserService struct {
+    userpb.UnimplementedUserServiceServer
+}
+
+func (s *UserService) CreateUser(ctx context.Context, req *userpb.CreateUserRequest) (*userpb.CreateUserResponse, error) {
+    // Your implementation
+    return &userpb.CreateUserResponse{...}, nil
+}
+```
+
+**Option 1: Run as traditional gRPC server (synchronous)**
+
+```go
+grpcServer := grpc.NewServer()
+userpb.RegisterUserServiceServer(grpcServer, &UserService{})
+grpcServer.Serve(lis)
+```
+
+**Option 2: Run as grpcq worker (asynchronous)**
+
+```go
+import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
+
+svc := &UserService{}
+registry := core.NewRegistry()
+
+// Wrap the gRPC method to work with grpcq
+registry.Register("userservice.UserService", "CreateUser",
+    grpcadapter.WrapUnaryMethod(
+        svc.CreateUser,
+        func() *userpb.CreateUserRequest { return &userpb.CreateUserRequest{} },
+    ))
+
+worker := core.NewWorker(adapter, registry, config)
+worker.Start(ctx)
+```
+
+### Client Side: Using gRPC Client Interfaces
+
+**Option 1: Traditional gRPC client (synchronous)**
+
+```go
+conn, _ := grpc.Dial("localhost:50051")
+client := userpb.NewUserServiceClient(conn)
+
+// Make synchronous call
+resp, err := client.CreateUser(ctx, &userpb.CreateUserRequest{...})
+```
+
+**Option 2: grpcq client using same interface (asynchronous)**
+
+```go
+import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
+
+publisher := core.NewPublisher(adapter, "my-service")
+clientAdapter := grpcadapter.NewClientAdapter(publisher, "user-queue")
+
+// Use the same client interface, but calls publish to queue!
+client := userpb.NewUserServiceClient(clientAdapter.Conn())
+client.CreateUser(ctx, &userpb.CreateUserRequest{...})  // Publishes to queue
+```
+
+### Benefits
+
+- **Write Once, Deploy Anywhere**: Same service code works for both sync and async modes
+- **Gradual Migration**: Migrate from gRPC to queue-based architecture incrementally
+- **Testing Flexibility**: Test with sync gRPC in dev, deploy with queues in production
+- **Standard Tooling**: Use standard gRPC tooling (protoc, server reflection, etc.)
+
+See the [User Service Example](go/examples/userservice/) for a complete working demonstration.
+
 ## Architecture
 
 ### Components
@@ -254,6 +340,9 @@ grpcq/
 │   │   ├── registry.go         # Handler registry
 │   │   ├── publisher.go        # Message publisher
 │   │   └── worker.go           # Message worker
+│   ├── grpc/                   # gRPC interoperability
+│   │   ├── server.go           # Server adapter for gRPC services
+│   │   └── client.go           # Client adapter for gRPC clients
 │   ├── adapters/               # Queue adapters
 │   │   ├── memory/             # In-memory (testing)
 │   │   ├── sqs/                # AWS SQS
@@ -326,6 +415,7 @@ See [implementation.md](implementation.md) for detailed implementation guide.
 - [x] SQS adapter
 - [x] Protocol documentation
 - [x] Basic examples
+- [x] gRPC interoperability (server and client adapters)
 
 ### v1.1 (Planned)
 
