@@ -1,0 +1,40 @@
+// proto/message.proto
+// Language-agnostic protocol definition for async gRPC queue messages
+syntax = "proto3";
+
+package grpcq;
+
+option go_package = "github.com/pbdeuchler/grpcq/proto/grpcq";
+
+// Message represents a gRPC call that has been serialized for async processing
+// through a message queue. This proto is the contract between all language
+// implementations - any system that can serialize/deserialize this message
+// can participate in the async gRPC ecosystem.
+message Message {
+  // originator identifies the sender of this message
+  // Format: arbitrary string, typically service name or instance ID
+  string originator = 1;
+
+  // topic maps to the gRPC service name
+  // Example: "user.UserService"
+  string topic = 2;
+
+  // action maps to the gRPC method name
+  // Example: "CreateUser"
+  string action = 3;
+
+  // payload contains the serialized protobuf request message
+  // This is the raw bytes of the gRPC request proto
+  bytes payload = 4;
+
+  // message_id is a unique identifier for this message
+  // Format: UUID or similar unique string
+  string message_id = 5;
+
+  // timestamp_ms is the Unix timestamp in milliseconds when the message was created
+  int64 timestamp_ms = 6;
+
+  // metadata contains additional key-value pairs for headers, tracing context, etc.
+  // Common keys: trace_id, span_id, correlation_id, user_id, etc.
+  map<string, string> metadata = 7;
+}
