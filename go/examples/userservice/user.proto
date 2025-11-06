@@ -1,0 +1,27 @@
+// Example user service proto for demonstration
+syntax = "proto3";
+
+package userservice;
+
+option go_package = "github.com/pbdeuchler/grpcq/go/examples/userservice/proto";
+
+message CreateUserRequest {
+  string name = 1;
+  string email = 2;
+}
+
+message CreateUserResponse {
+  string user_id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  string user_id = 1;
+  string name = 2;
+  string email = 3;
+}
