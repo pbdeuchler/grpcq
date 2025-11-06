@@ -56,14 +56,8 @@ func generateFileHeader(g *protogen.GeneratedFile, file *protogen.File) {
 }
 
 func generateFileContent(g *protogen.GeneratedFile, file *protogen.File) {
-	// Import required packages
-	g.P("import (")
-	g.P("	", g.QualifiedGoIdent(protogen.GoIdent{GoName: "context", GoImportPath: "context"}))
-	g.P("	", g.QualifiedGoIdent(protogen.GoIdent{GoName: "grpcq", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}))
-	g.P(")")
-	g.P()
-
 	// Generate code for each service
+	// Note: imports are automatically handled by protogen when using g.QualifiedGoIdent()
 	for _, service := range file.Services {
 		generateService(g, file, service)
 	}
