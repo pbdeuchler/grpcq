@@ -3,7 +3,7 @@ syntax = "proto3";
 
 package userservice;
 
-option go_package = "github.com/pbdeuchler/grpcq/go/examples/userservice";
+option go_package = "github.com/pbdeuchler/grpcq/go/examples/userservice/proto";
 
 message CreateUserRequest {
   string name = 1;

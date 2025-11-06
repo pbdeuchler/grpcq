@@ -4,7 +4,7 @@ syntax = "proto3";
 
 package grpcq;
 
-option go_package = "github.com/pbdeuchler/grpcq/proto/grpcq";
+option go_package = "github.com/pbdeuchler/grpcq/go/proto";
 
 // Message represents a gRPC call that has been serialized for async processing
 // through a message queue. This proto is the contract between all language

@@ -33,8 +33,8 @@ grpcq enables you to convert traditional synchronous gRPC services into asynchro
 ### Prerequisites
 
 - Go 1.21 or later
-- Protocol Buffers compiler (`protoc`)
-- AWS credentials (for SQS adapter)
+- Protocol Buffers compiler (`protoc`) - only needed if modifying proto files
+- AWS credentials (for SQS adapter, optional)
 
 ### Installation
 
@@ -45,22 +45,25 @@ go get github.com/pbdeuchler/grpcq
 ### Install Dependencies
 
 ```bash
-# Install protoc-gen-go
-make deps
-
-# Install protoc (Linux x86_64)
-make install-protoc
-
-# Or install protoc manually:
-# https://github.com/protocolbuffers/protobuf/releases
+# Get Go dependencies
+go mod download
 ```
 
-### Generate Proto Files
+**Note:** The core proto file (`go/proto/message.pb.go`) is already generated and checked into the repository. You only need to install `protoc` and generate proto files if you're modifying proto definitions.
 
-Before building or running tests, generate the protobuf code:
+### Optional: Generate Proto Files (only if modifying protos)
 
 ```bash
+# Install protoc-gen-go (only needed if regenerating protos)
+make deps
+
+# Install protoc (Linux x86_64, only needed if regenerating protos)
+make install-protoc
+
+# Generate proto files (only if you modified proto/message.proto)
 make proto
+
+# Generate example proto (only if working on examples)
 make proto-example
 ```
 

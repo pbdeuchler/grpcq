@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/pbdeuchler/grpcq/go/core"
-	pb "github.com/pbdeuchler/grpcq/proto/grpcq"
+	pb "github.com/pbdeuchler/grpcq/go/proto"
 	"google.golang.org/protobuf/proto"
 )
 

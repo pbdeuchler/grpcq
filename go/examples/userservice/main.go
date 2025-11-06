@@ -11,8 +11,8 @@ import (
 
 	"github.com/pbdeuchler/grpcq/go/adapters/memory"
 	"github.com/pbdeuchler/grpcq/go/core"
-	"github.com/pbdeuchler/grpcq/go/examples/userservice"
-	pb "github.com/pbdeuchler/grpcq/proto/grpcq"
+	userpb "github.com/pbdeuchler/grpcq/go/examples/userservice/proto"
+	pb "github.com/pbdeuchler/grpcq/go/proto"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -82,7 +82,7 @@ func runWorker(ctx context.Context, adapter core.QueueAdapter) {
 // handleCreateUser is the handler for CreateUser messages.
 func handleCreateUser(ctx context.Context, msg *pb.Message) error {
 	// Deserialize the payload
-	var req userservice.CreateUserRequest
+	var req userpb.CreateUserRequest
 	if err := proto.Unmarshal(msg.Payload, &req); err != nil {
 		return fmt.Errorf("failed to unmarshal CreateUserRequest: %w", err)
 	}
@@ -119,7 +119,7 @@ func runPublisher(ctx context.Context, adapter core.QueueAdapter) error {
 	}
 
 	for _, user := range users {
-		req := &userservice.CreateUserRequest{
+		req := &userpb.CreateUserRequest{
 			Name:  user.name,
 			Email: user.email,
 		}

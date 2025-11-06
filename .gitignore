@@ -15,8 +15,10 @@
 go.work
 go.work.sum
 
-# Generated protobuf files
+# Generated protobuf files (except checked-in proto packages)
 *.pb.go
+!go/proto/*.pb.go
+!go/examples/**/proto/*.pb.go
 
 # Build output
 bin/

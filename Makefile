@@ -1,16 +1,19 @@
 .PHONY: proto test build clean example
 
 # Generate protobuf code
+# Note: go/proto/message.pb.go is checked into version control
+# Only regenerate if you modify proto/message.proto
 proto:
-	@echo "Generating protobuf code..."
-	protoc --go_out=. --go_opt=paths=source_relative \
-		proto/message.proto
+	@echo "Generating protobuf code to go/proto/..."
+	protoc --go_out=go/proto --go_opt=paths=source_relative \
+		--proto_path=proto proto/message.proto
 
 # Generate example proto
+# Note: go/examples/userservice/proto/user.pb.go is also checked in
 proto-example:
-	@echo "Generating example protobuf code..."
-	protoc --go_out=. --go_opt=paths=source_relative \
-		go/examples/userservice/user.proto
+	@echo "Generating example protobuf code to go/examples/userservice/proto/..."
+	protoc --go_out=go/examples/userservice/proto --go_opt=paths=source_relative \
+		--proto_path=go/examples/userservice go/examples/userservice/user.proto
 
 # Run all tests
 test:
@@ -25,10 +28,10 @@ example:
 run-example: example
 	./bin/userservice-example
 
-# Clean generated files
+# Clean generated files (keeps checked-in proto packages)
 clean:
 	rm -rf bin/
-	find . -name "*.pb.go" -delete
+	find . -name "*.pb.go" ! -path "./go/proto/*" ! -path "./go/examples/*/proto/*" -delete
 
 # Install dependencies
 deps:

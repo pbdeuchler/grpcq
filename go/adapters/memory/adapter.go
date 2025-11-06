@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/pbdeuchler/grpcq/go/core"
-	pb "github.com/pbdeuchler/grpcq/proto/grpcq"
+	pb "github.com/pbdeuchler/grpcq/go/proto"
 )
 
 // Adapter is an in-memory implementation of the QueueAdapter interface.

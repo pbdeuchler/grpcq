@@ -1,6 +1,10 @@
 # Protocol Buffer Generation
 
-This project uses Protocol Buffers for message serialization. The generated `.pb.go` files are not checked into version control and must be generated locally.
+This project uses Protocol Buffers for message serialization.
+
+**Important:** The core message proto (`go/proto/message.pb.go`) is checked into version control. You only need to regenerate proto files if:
+- You modify `proto/message.proto`
+- You're working on the example service (`go/examples/userservice/user.proto`)
 
 ## Prerequisites
 

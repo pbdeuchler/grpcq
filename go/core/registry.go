@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	pb "github.com/pbdeuchler/grpcq/proto/grpcq"
+	pb "github.com/pbdeuchler/grpcq/go/proto"
 )
 
 // Registry maintains a mapping of topic/action pairs to handler functions.

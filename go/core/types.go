@@ -5,7 +5,7 @@ package core
 import (
 	"context"
 
-	pb "github.com/pbdeuchler/grpcq/proto/grpcq"
+	pb "github.com/pbdeuchler/grpcq/go/proto"
 )
 
 // QueueAdapter is the interface that queue implementations must satisfy.
