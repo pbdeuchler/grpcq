@@ -5,20 +5,17 @@
 # Only regenerate if you modify proto/message.proto
 proto:
 	@echo "Generating protobuf code to go/proto/..."
-	protoc --go_out=go/proto --go_opt=paths=source_relative \
-		--proto_path=proto proto/message.proto
+	protoc --go_out=go/proto --go_opt=paths=source_relative --proto_path=proto/ proto/*.proto
 
 # Generate example proto
 # Note: go/examples/userservice/proto/user.pb.go is also checked in
 proto-example:
 	@echo "Generating example protobuf code to go/examples/userservice/proto/..."
-	protoc --go_out=go/examples/userservice/proto --go_opt=paths=source_relative \
-		--proto_path=go/examples/userservice go/examples/userservice/user.proto
+	protoc --go_out=plugins=grpc:go/examples/userservice/proto --proto_path=go/examples/userservice go/examples/userservice/user.proto
 
 # Run all tests
 test:
-	go test -v ./go/core/...
-	go test -v ./go/adapters/...
+	go test --race -v ./go/...
 
 # Build the example
 example:
@@ -33,11 +30,6 @@ clean:
 	rm -rf bin/
 	find . -name "*.pb.go" ! -path "./go/proto/*" ! -path "./go/examples/*/proto/*" -delete
 
-# Install dependencies
-deps:
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go mod download
-
 # Format code
 fmt:
 	go fmt ./...
@@ -45,27 +37,6 @@ fmt:
 # Run linter
 lint:
 	golangci-lint run ./...
-
-# Build all
-build:
-	go build ./go/core
-	go build ./go/adapters/memory
-	go build ./go/adapters/sqs
-
-# Download and install protoc (Linux x86_64)
-install-protoc:
-	@echo "Installing protoc..."
-	@cd /tmp && \
-		curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v25.1/protoc-25.1-linux-x86_64.zip && \
-		unzip -q protoc-25.1-linux-x86_64.zip && \
-		sudo cp bin/protoc /usr/local/bin/ && \
-		sudo chmod +x /usr/local/bin/protoc && \
-		rm -rf protoc-25.1-linux-x86_64.zip bin include
-	@echo "protoc installed successfully"
-
-# Run mod tidy
-tidy:
-	go mod tidy
 
 # Help
 help:
@@ -76,10 +47,6 @@ help:
 	@echo "  example        - Build the example service"
 	@echo "  run-example    - Build and run the example service"
 	@echo "  clean          - Remove generated files and binaries"
-	@echo "  deps           - Install Go dependencies"
 	@echo "  fmt            - Format Go code"
 	@echo "  lint           - Run linter"
-	@echo "  build          - Build all packages"
-	@echo "  install-protoc - Download and install protoc compiler"
-	@echo "  tidy           - Run go mod tidy"
 	@echo "  help           - Show this help message"
