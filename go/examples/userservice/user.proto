@@ -25,3 +25,8 @@ message GetUserResponse {
   string name = 2;
   string email = 3;
 }
+
+service UserService {
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+}

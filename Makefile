@@ -11,7 +11,11 @@ proto:
 # Note: go/examples/userservice/proto/user.pb.go is also checked in
 proto-example:
 	@echo "Generating example protobuf code to go/examples/userservice/proto/..."
-	protoc --go_out=plugins=grpc:go/examples/userservice/proto --proto_path=go/examples/userservice go/examples/userservice/user.proto
+	protoc \
+		--go_out=go/examples/userservice/proto --go_opt=paths=source_relative \
+		--go-grpc_out=go/examples/userservice/proto --go-grpc_opt=paths=source_relative \
+		--proto_path=go/examples/userservice go/examples/userservice/user.proto
+
 
 # Run all tests
 test:
