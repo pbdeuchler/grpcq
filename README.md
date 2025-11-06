@@ -17,6 +17,7 @@ grpcq enables you to convert traditional synchronous gRPC services into asynchro
 ### When to Use grpcq
 
 ✅ **Good Fit:**
+
 - Fire-and-forget operations
 - High-volume background processing
 - Services that need independent scaling
@@ -24,47 +25,17 @@ grpcq enables you to convert traditional synchronous gRPC services into asynchro
 - Systems requiring queue-level retry and DLQ handling
 
 ❌ **Not Recommended:**
+
 - Request-response patterns requiring immediate answers
 - Real-time interactive APIs
 - Streaming operations
 
 ## Quick Start
 
-### Prerequisites
-
-- Go 1.21 or later
-- Protocol Buffers compiler (`protoc`) - only needed if modifying proto files
-- AWS credentials (for SQS adapter, optional)
-
 ### Installation
 
 ```bash
 go get github.com/pbdeuchler/grpcq
-```
-
-### Install Dependencies
-
-```bash
-# Get Go dependencies
-go mod download
-```
-
-**Note:** The core proto file (`go/proto/message.pb.go`) is already generated and checked into the repository. You only need to install `protoc` and generate proto files if you're modifying proto definitions.
-
-### Optional: Generate Proto Files (only if modifying protos)
-
-```bash
-# Install protoc-gen-go (only needed if regenerating protos)
-make deps
-
-# Install protoc (Linux x86_64, only needed if regenerating protos)
-make install-protoc
-
-# Generate proto files (only if you modified proto/message.proto)
-make proto
-
-# Generate example proto (only if working on examples)
-make proto-example
 ```
 
 ### Run the Example
@@ -300,13 +271,13 @@ grpcq/
 
 ### Available Adapters
 
-| Adapter | Status | Package |
-|---------|--------|---------|
-| Memory (In-memory) | ✅ Ready | `go/adapters/memory` |
-| AWS SQS | ✅ Ready | `go/adapters/sqs` |
-| Apache Kafka | 🚧 Planned | `go/adapters/kafka` |
-| RabbitMQ | 🚧 Planned | `go/adapters/rabbitmq` |
-| Redis Streams | 🚧 Planned | `go/adapters/redis` |
+| Adapter            | Status     | Package                |
+| ------------------ | ---------- | ---------------------- |
+| Memory (In-memory) | ✅ Ready   | `go/adapters/memory`   |
+| AWS SQS            | ✅ Ready   | `go/adapters/sqs`      |
+| Apache Kafka       | 🚧 Planned | `go/adapters/kafka`    |
+| RabbitMQ           | 🚧 Planned | `go/adapters/rabbitmq` |
+| Redis Streams      | 🚧 Planned | `go/adapters/redis`    |
 
 ### Creating a Custom Adapter
 
@@ -325,11 +296,11 @@ See existing adapters for examples.
 
 ### Status
 
-| Language | Status | Package |
-|----------|--------|---------|
-| Go | ✅ Ready | `go/` |
-| Python | 🚧 Planned | `python/` |
-| Rust | 🚧 Planned | `rust/` |
+| Language   | Status     | Package       |
+| ---------- | ---------- | ------------- |
+| Go         | ✅ Ready   | `go/`         |
+| Python     | 🚧 Planned | `python/`     |
+| Rust       | 🚧 Planned | `rust/`       |
 | TypeScript | 🚧 Planned | `typescript/` |
 
 ### Adding a New Language
@@ -349,6 +320,7 @@ See [implementation.md](implementation.md) for detailed implementation guide.
 ## Roadmap
 
 ### v1.0 (Current)
+
 - [x] Go core implementation
 - [x] Memory adapter
 - [x] SQS adapter
@@ -356,12 +328,13 @@ See [implementation.md](implementation.md) for detailed implementation guide.
 - [x] Basic examples
 
 ### v1.1 (Planned)
+
 - [ ] Kafka adapter
-- [ ] RabbitMQ adapter
 - [ ] Enhanced observability (metrics, tracing)
 - [ ] Dead letter queue handling
 
 ### v2.0 (Future)
+
 - [ ] Python implementation
 - [ ] Rust implementation
 - [ ] TypeScript implementation
@@ -370,44 +343,12 @@ See [implementation.md](implementation.md) for detailed implementation guide.
 
 ## Contributing
 
-Contributions are welcome! Please:
-
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Add tests
 5. Submit a pull request
 
-### Development Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/pbdeuchler/grpcq.git
-cd grpcq
-
-# Install dependencies
-make deps
-
-# Generate proto files
-make proto
-
-# Run tests
-make test
-
-# Build example
-make example
-```
-
 ## License
 
-See [LICENSE](LICENSE) file for details.
-
-## Support
-
-- GitHub Issues: https://github.com/pbdeuchler/grpcq/issues
-- Documentation: [docs/](docs/)
-- Examples: [go/examples/](go/examples/)
-
-## Credits
-
-Created as a demonstration of async gRPC patterns for building scalable microservices.
+MIT. See [LICENSE](LICENSE) file for details.
