@@ -37,7 +37,7 @@ go run . -mode sync-client
 
 **Start the worker:**
 ```bash
-go run . -mode async-worker
+go run . -mode async-server
 ```
 
 **In another terminal, run the publisher:**
@@ -114,39 +114,37 @@ resp, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
 
 **Worker (replaces gRPC server):**
 ```go
-import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
-
 svc := NewUserService()  // Same service!
+adapter := memory.NewAdapter(1000)
 
-registry := core.NewRegistry()
+// Use generated registration function
+server := userpb.RegisterUserServiceQServer(
+    adapter,
+    svc,
+    grpcq.WithQueueName("user-queue"),
+    grpcq.WithConcurrency(10),
+)
 
-// Wrap gRPC methods to work with queues
-registry.Register("userservice.UserService", "CreateUser",
-    grpcadapter.WrapUnaryMethod(
-        svc.CreateUser,  // Reuse the same method!
-        func() *userpb.CreateUserRequest { return &userpb.CreateUserRequest{} },
-    ))
-
-worker := core.NewWorker(adapter, registry, config)
-worker.Start(ctx)
+server.Start(ctx)
 ```
 
 **Publisher (replaces gRPC client):**
 ```go
-import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
+adapter := memory.NewAdapter(1000)
 
-publisher := core.NewPublisher(adapter, "my-service")
-clientAdapter := grpcadapter.NewClientAdapter(publisher, "user-queue")
+// Use generated client constructor
+client := userpb.NewUserServiceQClient(
+    adapter,
+    grpcq.WithClientQueueName("user-queue"),
+    grpcq.WithOriginator("my-service"),
+)
 
-// Use the same gRPC client interface!
-client := userpb.NewUserServiceClient(clientAdapter.Conn())
-
-// Looks like sync call but publishes to queue (fire-and-forget)
-client.CreateUser(ctx, &userpb.CreateUserRequest{
+// Same interface as gRPC client!
+resp, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
     Name: "Alice",
     Email: "alice@example.com",
 })
-// Returns immediately, no response
+// Returns immediately (fire-and-forget)
 ```
 
 ## Comparison
@@ -171,16 +169,20 @@ resp, err := client.CreateUser(ctx, req)  // Waits for response
 
 **Worker:**
 ```go
-registry.Register("userservice.UserService", "CreateUser",
-    grpcadapter.WrapUnaryMethod(svc.CreateUser, newRequest))
-worker := core.NewWorker(adapter, registry, config)
-worker.Start(ctx)
+server := userpb.RegisterUserServiceQServer(
+    adapter,
+    svc,
+    grpcq.WithQueueName("user-queue"),
+)
+server.Start(ctx)
 ```
 
 **Publisher:**
 ```go
-clientAdapter := grpcadapter.NewClientAdapter(publisher, "queue")
-client := userpb.NewUserServiceClient(clientAdapter.Conn())
+client := userpb.NewUserServiceQClient(
+    adapter,
+    grpcq.WithClientQueueName("user-queue"),
+)
 client.CreateUser(ctx, req)  // Fire-and-forget
 ```
 
@@ -251,8 +253,10 @@ cfg, _ := config.LoadDefaultConfig(ctx)
 sqsClient := sqs.NewFromConfig(cfg)
 
 adapter, _ := sqsadapter.NewAdapter(sqsadapter.Config{
-    QueueURL: "https://sqs.us-east-1.amazonaws.com/123456789/user-queue",
-    Client:   sqsClient,
+    QueueURLs: map[string]string{
+        "user-queue": "https://sqs.us-east-1.amazonaws.com/123456789/user-queue",
+    },
+    Client: sqsClient,
 })
 
 // Use adapter with worker or publisher
@@ -270,10 +274,12 @@ userpb.RegisterUserServiceServer(grpcServer, svc)
 go grpcServer.Serve(lis)
 
 // Also process async requests from queue
-registry.Register("userservice.UserService", "CreateUser",
-    grpcadapter.WrapUnaryMethod(svc.CreateUser, newRequest))
-worker := core.NewWorker(adapter, registry, config)
-go worker.Start(ctx)
+server := userpb.RegisterUserServiceQServer(
+    adapter,
+    svc,
+    grpcq.WithQueueName("user-queue"),
+)
+go server.Start(ctx)
 
 // Same service, serving both sync and async!
 ```

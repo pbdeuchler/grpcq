@@ -19,7 +19,7 @@ proto-example:
 
 # Run all tests
 test:
-	go test --race -v ./go/...
+	cd go && go test --race -v ./...
 
 # Build the example
 example:

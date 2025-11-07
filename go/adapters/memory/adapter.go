@@ -14,8 +14,9 @@ import (
 // It uses Go channels to simulate queue behavior.
 // This adapter is NOT suitable for production use - it's designed for testing only.
 type Adapter struct {
-	mu     sync.RWMutex
-	queues map[string]chan *messageWithReceipt
+	mu         sync.RWMutex
+	queues     map[string]chan *messageWithReceipt
+	bufferSize int
 }
 
 // messageWithReceipt pairs a message with its receipt for in-memory handling.
@@ -71,8 +72,12 @@ func (r *memoryReceipt) Nack(ctx context.Context) error {
 // NewAdapter creates a new in-memory queue adapter.
 // bufferSize determines the capacity of each queue's channel.
 func NewAdapter(bufferSize int) *Adapter {
+	if bufferSize <= 0 {
+		bufferSize = 1000 // Default buffer size
+	}
 	return &Adapter{
-		queues: make(map[string]chan *messageWithReceipt),
+		queues:     make(map[string]chan *messageWithReceipt),
+		bufferSize: bufferSize,
 	}
 }
 
@@ -83,8 +88,8 @@ func (a *Adapter) Publish(ctx context.Context, queueName string, messages ...*pb
 
 	// Ensure queue exists
 	if a.queues[queueName] == nil {
-		// Create a buffered channel with generous capacity
-		a.queues[queueName] = make(chan *messageWithReceipt, 1000)
+		// Create a buffered channel with configured capacity
+		a.queues[queueName] = make(chan *messageWithReceipt, a.bufferSize)
 	}
 
 	queue := a.queues[queueName]
@@ -110,7 +115,7 @@ func (a *Adapter) Consume(ctx context.Context, queueName string, maxBatch int) (
 	queue := a.queues[queueName]
 	if queue == nil {
 		// Create empty queue if it doesn't exist
-		a.queues[queueName] = make(chan *messageWithReceipt, 1000)
+		a.queues[queueName] = make(chan *messageWithReceipt, a.bufferSize)
 		queue = a.queues[queueName]
 	}
 	a.mu.Unlock()
@@ -175,7 +180,7 @@ func (a *Adapter) Clear() {
 			<-queue
 		}
 		// Recreate the channel
-		a.queues[name] = make(chan *messageWithReceipt, 1000)
+		a.queues[name] = make(chan *messageWithReceipt, a.bufferSize)
 	}
 }
 

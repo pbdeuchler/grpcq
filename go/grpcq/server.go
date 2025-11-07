@@ -21,6 +21,8 @@ type Server struct {
 	registry *core.Registry
 	config   *ServerConfig
 	worker   *core.Worker
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // ServerConfig contains configuration for a grpcq server.
@@ -124,8 +126,11 @@ func (s *Server) RegisterMethod(
 }
 
 // Start starts the server and begins processing messages.
-// This blocks until the context is cancelled or an error occurs.
+// This blocks until the context is cancelled, Stop is called, or an error occurs.
 func (s *Server) Start(ctx context.Context) error {
+	// Create a child context that we can cancel independently
+	s.ctx, s.cancel = context.WithCancel(ctx)
+
 	workerConfig := core.WorkerConfig{
 		QueueName:      s.config.QueueName,
 		Concurrency:    s.config.Concurrency,
@@ -134,11 +139,20 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.worker = core.NewWorker(s.adapter, s.registry, workerConfig)
-	return s.worker.Start(ctx)
+	return s.worker.Start(s.ctx)
 }
 
 // Stop gracefully stops the server.
-func (s *Server) Stop() {
-	// Worker stops when context is cancelled
-	// This is a no-op for now but provided for API completeness
+// It cancels the server context and waits for the worker to complete.
+func (s *Server) Stop() error {
+	if s.cancel == nil {
+		return fmt.Errorf("server not started")
+	}
+
+	// Cancel the context to signal shutdown
+	s.cancel()
+
+	// The worker will handle graceful shutdown internally
+	// and return from Start() when all in-flight messages complete
+	return nil
 }

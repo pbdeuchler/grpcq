@@ -36,7 +36,11 @@ grpcq enables you to convert traditional synchronous gRPC services into asynchro
 ### Installation
 
 ```bash
+# Install the grpcq package
 go get github.com/pbdeuchler/grpcq
+
+# Install the protoc plugin for code generation
+go install github.com/pbdeuchler/grpcq/cmd/protoc-gen-grpcq@latest
 ```
 
 ### Run the Example
@@ -46,7 +50,76 @@ cd go/examples/userservice
 go run main.go
 ```
 
-## Usage
+## Usage (Recommended: Code Generation)
+
+grpcq provides a `protoc` plugin that generates client and server stubs from your Protocol Buffer definitions. This is the **recommended way** to use grpcq.
+
+### 1. Generate Code
+
+```bash
+# Generate gRPC and grpcq code from your .proto files
+protoc --go_out=. --go_opt=paths=source_relative \
+       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+       --grpcq_out=. --grpcq_opt=paths=source_relative \
+       your_service.proto
+```
+
+### 2. Implement Your Service
+
+Your service implementation works for both gRPC and grpcq:
+
+```go
+type UserService struct {
+    userpb.UnimplementedUserServiceServer
+}
+
+func (s *UserService) CreateUser(ctx context.Context, req *userpb.CreateUserRequest) (*userpb.CreateUserResponse, error) {
+    // Same implementation for both sync and async!
+    return &userpb.CreateUserResponse{...}, nil
+}
+```
+
+### 3. Server: Choose Your Mode
+
+**Synchronous (gRPC):**
+```go
+grpcServer := grpc.NewServer()
+userpb.RegisterUserServiceServer(grpcServer, &UserService{})
+grpcServer.Serve(listener)
+```
+
+**Asynchronous (grpcq):**
+```go
+adapter := memory.NewAdapter(1000)
+server := userpb.RegisterUserServiceQServer(
+    adapter,
+    &UserService{},
+    grpcq.WithQueueName("user-queue"),
+)
+server.Start(ctx)
+```
+
+### 4. Client: Same Interface
+
+**Synchronous (gRPC):**
+```go
+conn, _ := grpc.Dial("localhost:50051")
+client := userpb.NewUserServiceClient(conn)
+resp, _ := client.CreateUser(ctx, req)
+```
+
+**Asynchronous (grpcq):**
+```go
+adapter := memory.NewAdapter(1000)
+client := userpb.NewUserServiceQClient(adapter, grpcq.WithClientQueueName("user-queue"))
+resp, _ := client.CreateUser(ctx, req)  // Fire-and-forget
+```
+
+See the [User Service Example](go/examples/userservice/) and [Plugin Documentation](cmd/protoc-gen-grpcq/) for more details.
+
+## Advanced Usage (Low-Level API)
+
+For advanced use cases, you can use the core API directly without code generation.
 
 ### Publisher (Client Side)
 
@@ -128,8 +201,11 @@ func handleMethod(ctx context.Context, msg *pb.Message) error {
 }
 ```
 
-### Using SQS Adapter
+### Using Different Queue Adapters
 
+The same code works with different queue backends by swapping the adapter:
+
+**AWS SQS:**
 ```go
 import (
     "github.com/aws/aws-sdk-go-v2/config"
@@ -137,94 +213,19 @@ import (
     sqsadapter "github.com/pbdeuchler/grpcq/go/adapters/sqs"
 )
 
-// Load AWS config
-cfg, err := config.LoadDefaultConfig(ctx)
-if err != nil {
-    log.Fatal(err)
-}
-
-// Create SQS client
+cfg, _ := config.LoadDefaultConfig(ctx)
 client := sqs.NewFromConfig(cfg)
 
-// Create SQS adapter
-adapter, err := sqsadapter.NewAdapter(sqsadapter.Config{
-    QueueURL: "https://sqs.us-east-1.amazonaws.com/123456789/my-queue",
-    Client:   client,
+adapter, _ := sqsadapter.NewAdapter(sqsadapter.Config{
+    QueueURLs: map[string]string{
+        "user-queue": "https://sqs.us-east-1.amazonaws.com/123456789/user-queue",
+    },
+    Client: client,
 })
 
-// Use adapter with publisher/worker
-publisher := core.NewPublisher(adapter, "my-service")
+// Use with generated server/client
+server := userpb.RegisterUserServiceQServer(adapter, svc, grpcq.WithQueueName("user-queue"))
 ```
-
-## Code Generation
-
-grpcq provides a `protoc` plugin that generates client and server stubs from your Protocol Buffer definitions.
-
-### Generate Code
-
-```bash
-# Install the plugin
-go install github.com/pbdeuchler/grpcq/cmd/protoc-gen-grpcq@latest
-
-# Generate gRPC and grpcq code
-protoc --go_out=. --go_opt=paths=source_relative \
-       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-       --grpcq_out=. --grpcq_opt=paths=source_relative \
-       your_service.proto
-```
-
-### Write Your Service
-
-Your service implementation works for both gRPC and grpcq:
-
-```go
-type UserService struct {
-    userpb.UnimplementedUserServiceServer
-}
-
-func (s *UserService) CreateUser(ctx context.Context, req *userpb.CreateUserRequest) (*userpb.CreateUserResponse, error) {
-    // Same implementation for both!
-    return &userpb.CreateUserResponse{...}, nil
-}
-```
-
-### Server: Choose Your Mode
-
-**Synchronous (gRPC):**
-```go
-grpcServer := grpc.NewServer()
-userpb.RegisterUserServiceServer(grpcServer, &UserService{})
-grpcServer.Serve(listener)
-```
-
-**Asynchronous (grpcq):**
-```go
-adapter := memory.NewAdapter(1000)
-server := userpb.RegisterUserServiceQServer(
-    adapter,
-    &UserService{},
-    grpcq.WithQueueName("user-queue"),
-)
-server.Start(ctx)
-```
-
-### Client: Same Interface
-
-**Synchronous (gRPC):**
-```go
-conn, _ := grpc.Dial("localhost:50051")
-client := userpb.NewUserServiceClient(conn)
-resp, _ := client.CreateUser(ctx, req)
-```
-
-**Asynchronous (grpcq):**
-```go
-adapter := memory.NewAdapter(1000)
-client := userpb.NewUserServiceQClient(adapter, grpcq.WithClientQueueName("user-queue"))
-resp, _ := client.CreateUser(ctx, req)  // Fire-and-forget
-```
-
-See the [User Service Example](go/examples/userservice/) and [Plugin Documentation](cmd/protoc-gen-grpcq/) for more details.
 
 ## Architecture
 

@@ -1,5 +1,7 @@
 # gRPC Interoperability Package
 
+> **⚠️ NOTE**: This package provides low-level adapters for advanced use cases. **For most users, we recommend using the `protoc-gen-grpcq` plugin** which generates type-safe client and server code automatically. See [protoc-gen-grpcq README](../../cmd/protoc-gen-grpcq/README.md) and the [User Service Example](../examples/userservice/README.md).
+
 This package provides seamless interoperability between standard gRPC services and grpcq's queue-based architecture. It allows you to write service implementations once and deploy them in either synchronous (gRPC) or asynchronous (grpcq) mode.
 
 ## Overview
@@ -9,6 +11,19 @@ The `grpc` package contains adapters that bridge the gap between:
 - gRPC client interfaces ↔ grpcq publishers
 
 This enables a "write once, deploy anywhere" pattern for microservices.
+
+### When to Use This Package
+
+Use this package directly when:
+- You need fine-grained control over message routing
+- You're integrating with non-proto services
+- You're building custom abstractions on top of grpcq
+
+For typical gRPC services, use the `protoc-gen-grpcq` plugin instead, which:
+- Generates code automatically from `.proto` files
+- Provides type safety at compile time
+- Eliminates boilerplate
+- Matches the standard gRPC workflow
 
 ## Key Components
 

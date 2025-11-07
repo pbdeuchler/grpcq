@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -155,6 +154,8 @@ func (w *Worker) processMessage(ctx context.Context, item MessageItem) {
 type WorkerPool struct {
 	workers []*Worker
 	wg      sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // NewWorkerPool creates a pool of workers.
@@ -169,15 +170,22 @@ func NewWorkerPool(adapter QueueAdapter, registry *Registry, config WorkerConfig
 }
 
 // Start starts all workers in the pool.
+// If any worker encounters an error, all workers are stopped gracefully.
 func (p *WorkerPool) Start(ctx context.Context) error {
+	// Create a child context that we control
+	p.ctx, p.cancel = context.WithCancel(ctx)
+	defer p.cancel() // Ensure cleanup on return
+
 	errCh := make(chan error, len(p.workers))
 
 	for _, worker := range p.workers {
 		p.wg.Add(1)
 		go func(w *Worker) {
 			defer p.wg.Done()
-			if err := w.Start(ctx); err != nil && err != context.Canceled {
+			if err := w.Start(p.ctx); err != nil && err != context.Canceled {
 				errCh <- err
+				// Cancel context to stop other workers
+				p.cancel()
 			}
 		}(worker)
 	}
@@ -188,22 +196,35 @@ func (p *WorkerPool) Start(ctx context.Context) error {
 		close(errCh)
 	}()
 
-	// Return the first error encountered, if any
+	// Collect all errors
+	var firstErr error
 	for err := range errCh {
-		if err != nil {
-			return fmt.Errorf("worker error: %w", err)
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 
-	return nil
+	return firstErr
 }
 
-// Stop stops all workers in the pool.
+// Stop stops all workers in the pool gracefully.
 func (p *WorkerPool) Stop(ctx context.Context) error {
-	for _, worker := range p.workers {
-		if err := worker.Stop(ctx); err != nil {
-			return err
-		}
+	// Cancel the pool context to signal shutdown
+	if p.cancel != nil {
+		p.cancel()
 	}
-	return nil
+
+	// Wait for all workers to complete with timeout from context
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

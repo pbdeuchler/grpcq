@@ -98,12 +98,8 @@ func generateServerRegistration(g *protogen.GeneratedFile, service *protogen.Ser
 	g.P("// Register", serviceName, "QServer registers the ", serviceName, " server implementation")
 	g.P("// with the provided queue adapter and configuration.")
 	g.P("func Register", serviceName, "QServer(adapter ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "QueueAdapter", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ", srv ", serviceName, "QServer, opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "ServerOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") *", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Server", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), " {")
-	g.P("	cfg := &", g.QualifiedGoIdent(protogen.GoIdent{GoName: "ServerConfig", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), "{}")
-	g.P("	for _, opt := range opts {")
-	g.P("		opt(cfg)")
-	g.P("	}")
-	g.P()
-	g.P("	s := ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "NewServer", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), "(adapter, cfg)")
+	g.P("	// Create server with options - options are applied inside NewServer")
+	g.P("	s := ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "NewServer", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), "(adapter, opts...)")
 	g.P()
 
 	// Register each method
@@ -163,5 +159,10 @@ func unexport(s string) string {
 	if s == "" {
 		return ""
 	}
-	return string(s[0]+('a'-'A')) + s[1:]
+	// Convert first character to lowercase
+	r := []rune(s)
+	if r[0] >= 'A' && r[0] <= 'Z' {
+		r[0] = r[0] + ('a' - 'A')
+	}
+	return string(r)
 }
