@@ -47,7 +47,23 @@ go install github.com/pbdeuchler/grpcq/cmd/protoc-gen-grpcq@latest
 
 ```bash
 cd go/examples/userservice
-go run main.go
+go run main.go               # default: demo mode (async server + client)
+```
+
+The async demo starts an in-memory queue plus a small HTTP publish endpoint on `127.0.0.1:8081`. You can override the listener and client endpoint with:
+
+```bash
+go run main.go -queue_listen 0.0.0.0:8081 -queue_endpoint http://localhost:8081
+```
+
+To run the async worker and publisher in separate terminals, reuse the same endpoint:
+
+```bash
+# Terminal 1
+go run main.go -mode async-server -queue_listen 127.0.0.1:8081
+
+# Terminal 2
+go run main.go -mode async-client -queue_endpoint http://127.0.0.1:8081
 ```
 
 ## Usage (Recommended: Code Generation)
@@ -91,6 +107,13 @@ grpcServer.Serve(listener)
 **Asynchronous (grpcq):**
 ```go
 adapter := memory.NewAdapter(1000)
+queueServer := &http.Server{
+    Addr:    ":8081",
+    Handler: memory.NewPublishHandler(adapter),
+}
+go queueServer.ListenAndServe()
+defer queueServer.Shutdown(ctx)
+
 server := userpb.RegisterUserServiceQServer(
     adapter,
     &UserService{},
@@ -110,7 +133,7 @@ resp, _ := client.CreateUser(ctx, req)
 
 **Asynchronous (grpcq):**
 ```go
-adapter := memory.NewAdapter(1000)
+adapter := memory.NewRemoteAdapter("http://localhost:8081")
 client := userpb.NewUserServiceQClient(adapter, grpcq.WithClientQueueName("user-queue"))
 resp, _ := client.CreateUser(ctx, req)  // Fire-and-forget
 ```

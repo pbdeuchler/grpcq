@@ -35,15 +35,19 @@ go run . -mode sync-client
 
 ### Asynchronous Queue-Based
 
+The async modes share work through an HTTP publish endpoint that fronts the in-memory adapter. Run the worker with a listener address (defaults to `127.0.0.1:8081`):
+
 **Start the worker:**
 ```bash
-go run . -mode async-server
+go run . -mode async-server -queue_listen 127.0.0.1:8081
 ```
 
-**In another terminal, run the publisher:**
+**In another terminal, run the publisher pointing at the same endpoint:**
 ```bash
-go run . -mode async-client
+go run . -mode async-client -queue_endpoint http://127.0.0.1:8081
 ```
+
+You can pick any address/port pair as long as both processes agree. For example, to expose the demo on all interfaces use `-queue_listen 0.0.0.0:9000` on the server and `-queue_endpoint http://localhost:9000` on the client.
 
 ## Architecture Overview
 

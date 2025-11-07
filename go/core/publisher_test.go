@@ -119,3 +119,57 @@ func TestPublisherSendBatch(t *testing.T) {
 		t.Error("Expected second message metadata id=2")
 	}
 }
+
+func TestPublisherSendMetadataIsCloned(t *testing.T) {
+	adapter := &mockAdapter{}
+	publisher := NewPublisher(adapter, "origin")
+
+	metadata := map[string]string{"key": "value"}
+	err := publisher.Send(
+		context.Background(),
+		"test-queue",
+		"test.Service",
+		"Action",
+		&pb.Message{},
+		metadata,
+	)
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	if len(adapter.published) != 1 {
+		t.Fatalf("Expected 1 published message, got %d", len(adapter.published))
+	}
+
+	metadata["key"] = "mutated"
+	if adapter.published[0].Metadata["key"] != "value" {
+		t.Fatalf("Expected metadata to be cloned, got %s", adapter.published[0].Metadata["key"])
+	}
+}
+
+func TestPublisherSendBatchMetadataIsCloned(t *testing.T) {
+	adapter := &mockAdapter{}
+	publisher := NewPublisher(adapter, "origin")
+
+	specs := []MessageSpec{
+		{
+			Topic:        "svc",
+			Action:       "A",
+			ProtoMessage: &pb.Message{},
+			Metadata:     map[string]string{"key": "value"},
+		},
+	}
+
+	if err := publisher.SendBatch(context.Background(), "queue", specs); err != nil {
+		t.Fatalf("SendBatch failed: %v", err)
+	}
+
+	if len(adapter.published) != 1 {
+		t.Fatalf("Expected 1 published message, got %d", len(adapter.published))
+	}
+
+	specs[0].Metadata["key"] = "mutated"
+	if adapter.published[0].Metadata["key"] != "value" {
+		t.Fatalf("Expected metadata to be cloned, got %s", adapter.published[0].Metadata["key"])
+	}
+}

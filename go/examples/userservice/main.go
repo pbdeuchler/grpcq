@@ -2,17 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/pbdeuchler/grpcq/go/adapters/memory"
-	"github.com/pbdeuchler/grpcq/go/grpcq"
 	userpb "github.com/pbdeuchler/grpcq/go/examples/userservice/proto"
+	"github.com/pbdeuchler/grpcq/go/grpcq"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -23,7 +25,9 @@ const (
 )
 
 var (
-	mode = flag.String("mode", "demo", "Mode to run: sync-server, sync-client, async-server, async-client, or demo")
+	mode            = flag.String("mode", "demo", "Mode to run: sync-server, sync-client, async-server, async-client, or demo")
+	queueListenAddr = flag.String("queue_listen", "127.0.0.1:8081", "Address for the async queue publish HTTP server (used by async server/demo)")
+	queueEndpoint   = flag.String("queue_endpoint", "http://127.0.0.1:8081", "Endpoint for the async queue publish HTTP server (used by async client/demo)")
 )
 
 func main() {
@@ -90,7 +94,15 @@ func runSyncServer(ctx context.Context, sigCh chan os.Signal) {
 // runSyncClient calls the traditional gRPC server.
 func runSyncClient(ctx context.Context) {
 	// Connect to gRPC server - uses standard gRPC client
-	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	connCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(
+		connCtx,
+		grpcAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
@@ -128,13 +140,10 @@ func runSyncClient(ctx context.Context) {
 // runAsyncServer starts a grpcq server that processes messages.
 // Notice how similar this is to the sync version!
 func runAsyncServer(ctx context.Context, sigCh chan os.Signal) {
-	// Create adapter
 	adapter := memory.NewAdapter(1000)
+	queueServer, queueErrCh := startQueuePublishServer(*queueListenAddr, adapter)
 
-	// Create service implementation (same code as gRPC!)
 	svc := NewUserService()
-
-	// Register service with grpcq - uses generated registration function
 	server := userpb.RegisterUserServiceQServer(
 		adapter,
 		svc,
@@ -145,32 +154,65 @@ func runAsyncServer(ctx context.Context, sigCh chan os.Signal) {
 
 	log.Println("grpcq server started, waiting for messages...")
 
-	// Start server in goroutine
+	serverErrCh := make(chan error, 1)
 	go func() {
-		if err := server.Start(ctx); err != nil && err != context.Canceled {
-			log.Printf("Server error: %v", err)
-		}
+		serverErrCh <- server.Start(ctx)
 	}()
 
-	// Wait for shutdown signal
-	<-sigCh
-	log.Println("Shutting down grpcq server...")
+	var (
+		serverErr     error
+		serverRunning = true
+	)
+
+	select {
+	case <-sigCh:
+		log.Println("Shutdown signal received")
+	case err := <-queueErrCh:
+		if err != nil {
+			log.Printf("Queue publish server error: %v", err)
+		}
+	case err := <-serverErrCh:
+		serverErr = err
+		serverRunning = false
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("grpcq server exited: %v", err)
+		}
+	}
+
+	if serverRunning {
+		if err := server.Stop(); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("Error stopping server: %v", err)
+		}
+
+		serverErr = <-serverErrCh
+		if serverErr != nil && !errors.Is(serverErr, context.Canceled) {
+			log.Printf("grpcq server exited: %v", serverErr)
+		}
+	}
+
+	shutdownHTTPServer(queueServer)
+
+	select {
+	case err := <-queueErrCh:
+		if err != nil {
+			log.Printf("Queue publish server error: %v", err)
+		}
+	default:
+	}
 }
 
 // runAsyncClient publishes messages using the grpcq client.
 // Notice how similar this is to the sync version!
 func runAsyncClient(ctx context.Context) {
-	// Create adapter
-	adapter := memory.NewAdapter(1000)
+	adapter := memory.NewRemoteAdapter(*queueEndpoint)
 
-	// Create grpcq client - uses generated client constructor
 	client := userpb.NewUserServiceQClient(
 		adapter,
 		grpcq.WithClientQueueName(queueName),
 		grpcq.WithOriginator("example-client"),
 	)
 
-	log.Println("Publishing CreateUser requests via grpcq...")
+	log.Printf("Publishing CreateUser requests via grpcq (endpoint: %s)...", *queueEndpoint)
 
 	// Make calls - same interface as gRPC client!
 	users := []struct {
@@ -201,38 +243,33 @@ func runAsyncClient(ctx context.Context) {
 
 // runDemo runs both server and client together.
 func runDemo(ctx context.Context, sigCh chan os.Signal) {
-	// Create shared adapter
 	adapter := memory.NewAdapter(1000)
+	queueServer, queueErrCh := startQueuePublishServer(*queueListenAddr, adapter)
 
-	// Start async server
+	svc := NewUserService()
+	server := userpb.RegisterUserServiceQServer(
+		adapter,
+		svc,
+		grpcq.WithQueueName(queueName),
+		grpcq.WithConcurrency(5),
+		grpcq.WithPollInterval(100),
+	)
+
+	serverErrCh := make(chan error, 1)
 	go func() {
-		svc := NewUserService()
-		server := userpb.RegisterUserServiceQServer(
-			adapter,
-			svc,
-			grpcq.WithQueueName(queueName),
-			grpcq.WithConcurrency(5),
-			grpcq.WithPollInterval(100),
-		)
-
-		log.Println("Server started, waiting for messages...")
-		if err := server.Start(ctx); err != nil && err != context.Canceled {
-			log.Printf("Server error: %v", err)
-		}
-		log.Println("Server stopped")
+		serverErrCh <- server.Start(ctx)
 	}()
 
 	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Create client and publish messages
 	client := userpb.NewUserServiceQClient(
-		adapter,
+		memory.NewRemoteAdapter(*queueEndpoint),
 		grpcq.WithClientQueueName(queueName),
 		grpcq.WithOriginator("demo-client"),
 	)
 
-	log.Println("Publishing user creation requests...")
+	log.Printf("Publishing user creation requests (endpoint: %s)...", *queueEndpoint)
 
 	users := []struct {
 		name  string
@@ -258,14 +295,79 @@ func runDemo(ctx context.Context, sigCh chan os.Signal) {
 
 	log.Println("All messages published")
 
-	// Wait for completion or signal
+	var (
+		serverErr     error
+		serverRunning = true
+	)
+
 	select {
 	case <-sigCh:
 		log.Println("Received shutdown signal")
+	case err := <-queueErrCh:
+		if err != nil {
+			log.Printf("Queue publish server error: %v", err)
+		}
+	case err := <-serverErrCh:
+		serverErr = err
+		serverRunning = false
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("grpcq server exited: %v", err)
+		}
 	case <-time.After(2 * time.Second):
 		log.Println("Demo completed")
 	}
 
 	// Give server time to process remaining messages
 	time.Sleep(1 * time.Second)
+
+	if serverRunning {
+		if err := server.Stop(); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("Error stopping server: %v", err)
+		}
+
+		serverErr = <-serverErrCh
+		if serverErr != nil && !errors.Is(serverErr, context.Canceled) {
+			log.Printf("grpcq server exited: %v", serverErr)
+		}
+	}
+
+	shutdownHTTPServer(queueServer)
+
+	select {
+	case err := <-queueErrCh:
+		if err != nil {
+			log.Printf("Queue publish server error: %v", err)
+		}
+	default:
+	}
+}
+
+func startQueuePublishServer(addr string, adapter *memory.Adapter) (*http.Server, chan error) {
+	server := &http.Server{
+		Addr:    addr,
+		Handler: memory.NewPublishHandler(adapter),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("Queue publish HTTP server listening on %s", addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	return server, errCh
+}
+
+func shutdownHTTPServer(server *http.Server) {
+	if server == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("Queue publish server shutdown error: %v", err)
+	}
 }

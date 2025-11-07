@@ -51,9 +51,15 @@ func (w *Worker) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return w.shutdown(ctx)
+			if err := w.shutdown(context.Background()); err != nil {
+				return err
+			}
+			return ctx.Err()
 		case <-w.stopCh:
-			return w.shutdown(ctx)
+			if err := w.shutdown(context.Background()); err != nil {
+				return err
+			}
+			return nil
 		default:
 		}
 

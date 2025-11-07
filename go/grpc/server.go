@@ -6,6 +6,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	pb "github.com/pbdeuchler/grpcq/go/proto"
 	"google.golang.org/protobuf/proto"
@@ -30,14 +31,15 @@ type MethodHandler struct {
 // where RequestType and ResponseType are proto.Message types.
 //
 // Example:
-//   adapter := grpc.UnaryServerAdapter(
-//       "userservice.UserService",
-//       "CreateUser",
-//       func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
-//           // Your implementation
-//       },
-//       func() proto.Message { return &CreateUserRequest{} },
-//   )
+//
+//	adapter := grpc.UnaryServerAdapter(
+//	    "userservice.UserService",
+//	    "CreateUser",
+//	    func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+//	        // Your implementation
+//	    },
+//	    func() proto.Message { return &CreateUserRequest{} },
+//	)
 func UnaryServerAdapter(
 	serviceName string,
 	methodName string,
@@ -56,23 +58,15 @@ func UnaryServerAdapter(
 				return fmt.Errorf("failed to unmarshal request: %w", err)
 			}
 
-			// Call the method using type assertion
-			// This uses a generic interface{} approach for flexibility
-			switch fn := methodFunc.(type) {
-			case func(context.Context, proto.Message) (proto.Message, error):
-				resp, err := fn(ctx, req)
-				if err != nil {
-					return fmt.Errorf("method %s failed: %w", methodName, err)
-				}
-				// For async processing, we don't return the response directly
-				// In a full implementation, this could publish a response message
-				_ = resp
-				return nil
-			default:
-				// Try calling with concrete types - this requires reflection in a real implementation
-				// For now, we'll provide a helper function for each method type
-				return fmt.Errorf("unsupported method signature")
+			resp, err := invokeUnaryMethod(methodFunc, ctx, req)
+			if err != nil {
+				return fmt.Errorf("method %s failed: %w", methodName, err)
 			}
+
+			// For async processing, we don't return the response directly
+			// In a full implementation, this could publish a response message
+			_ = resp
+			return nil
 		},
 	}
 }
@@ -108,12 +102,13 @@ func (s *ServerAdapter) RegisterMethod(methodName string, handler func(ctx conte
 // The methodFunc should have signature: func(ctx context.Context, req TReq) (TResp, error)
 //
 // Example:
-//   adapter.RegisterUnary("CreateUser",
-//       func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
-//           return svc.CreateUser(ctx, req)
-//       },
-//       func() proto.Message { return &CreateUserRequest{} },
-//   )
+//
+//	adapter.RegisterUnary("CreateUser",
+//	    func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+//	        return svc.CreateUser(ctx, req)
+//	    },
+//	    func() proto.Message { return &CreateUserRequest{} },
+//	)
 func (s *ServerAdapter) RegisterUnary(
 	methodName string,
 	methodFunc func(context.Context, proto.Message) (proto.Message, error),
@@ -149,12 +144,13 @@ func (s *ServerAdapter) GetHandlers() []MethodHandler {
 // It returns a function compatible with core.Handler.
 //
 // Example:
-//   handler := grpc.WrapUnaryMethod(
-//       func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
-//           return &CreateUserResponse{UserId: "123", Name: req.Name, Email: req.Email}, nil
-//       },
-//       func() proto.Message { return &CreateUserRequest{} },
-//   )
+//
+//	handler := grpc.WrapUnaryMethod(
+//	    func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+//	        return &CreateUserResponse{UserId: "123", Name: req.Name, Email: req.Email}, nil
+//	    },
+//	    func() proto.Message { return &CreateUserRequest{} },
+//	)
 func WrapUnaryMethod[TReq proto.Message, TResp proto.Message](
 	methodFunc func(context.Context, TReq) (TResp, error),
 	newRequest func() TReq,
@@ -175,4 +171,56 @@ func WrapUnaryMethod[TReq proto.Message, TResp proto.Message](
 		_ = resp
 		return nil
 	}
+}
+
+var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
+
+func invokeUnaryMethod(methodFunc interface{}, ctx context.Context, req proto.Message) (proto.Message, error) {
+	switch fn := methodFunc.(type) {
+	case func(context.Context, proto.Message) (proto.Message, error):
+		return fn(ctx, req)
+	case func(context.Context, proto.Message) error:
+		return nil, fn(ctx, req)
+	}
+
+	fnValue := reflect.ValueOf(methodFunc)
+	if fnValue.Kind() != reflect.Func {
+		return nil, fmt.Errorf("methodFunc must be a function")
+	}
+
+	fnType := fnValue.Type()
+	if fnType.NumIn() != 2 || !fnType.In(0).AssignableTo(contextType) {
+		return nil, fmt.Errorf("unsupported method signature")
+	}
+
+	reqValue := reflect.ValueOf(req)
+	if !reqValue.Type().AssignableTo(fnType.In(1)) {
+		return nil, fmt.Errorf("unsupported request type: got %s, want %s", reqValue.Type(), fnType.In(1))
+	}
+
+	if fnType.NumOut() != 2 {
+		return nil, fmt.Errorf("unsupported method return signature")
+	}
+
+	results := fnValue.Call([]reflect.Value{reflect.ValueOf(ctx), reqValue})
+	respVal := results[0]
+	errVal := results[1]
+
+	if !errVal.IsNil() {
+		err, ok := errVal.Interface().(error)
+		if !ok {
+			return nil, fmt.Errorf("method returned non-error type")
+		}
+		return nil, err
+	}
+
+	if respVal.IsNil() {
+		return nil, nil
+	}
+
+	resp, ok := respVal.Interface().(proto.Message)
+	if !ok {
+		return nil, fmt.Errorf("response does not implement proto.Message")
+	}
+	return resp, nil
 }
