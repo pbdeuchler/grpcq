@@ -57,7 +57,7 @@ func (p *Publisher) Send(
 		Payload:     payload,
 		MessageId:   uuid.New().String(),
 		TimestampMs: time.Now().UnixMilli(),
-		Metadata:    cloneMetadata(metadata),
+		Metadata:    metadata,
 	}
 
 	// Publish to the queue
@@ -95,7 +95,7 @@ func (p *Publisher) SendBatch(
 			Payload:     payload,
 			MessageId:   uuid.New().String(),
 			TimestampMs: time.Now().UnixMilli(),
-			Metadata:    cloneMetadata(spec.Metadata),
+			Metadata:    spec.Metadata,
 		}
 	}
 
@@ -113,16 +113,4 @@ type MessageSpec struct {
 	Action       string
 	ProtoMessage proto.Message
 	Metadata     map[string]string
-}
-
-func cloneMetadata(metadata map[string]string) map[string]string {
-	if len(metadata) == 0 {
-		return nil
-	}
-
-	cp := make(map[string]string, len(metadata))
-	for k, v := range metadata {
-		cp[k] = v
-	}
-	return cp
 }
