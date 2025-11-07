@@ -84,10 +84,10 @@ func generateService(g *protogen.GeneratedFile, file *protogen.File, service *pr
 }
 
 func generateServerInterface(g *protogen.GeneratedFile, service *protogen.Service, serviceName string) {
-	g.P("// ", serviceName, "QServer is the server API for ", serviceName, " service with grpcq.")
+	g.P("// ", serviceName, "Consumer is the server API for ", serviceName, " service with grpcq.")
 	g.P("// This interface is compatible with the gRPC ", serviceName, "Server interface.")
 	g.P("// Implementations should embed the gRPC Unimplemented server for compatibility.")
-	g.P("type ", serviceName, "QServer interface {")
+	g.P("type ", serviceName, "Consumer interface {")
 	for _, method := range service.Methods {
 		g.P("	", method.GoName, "(", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Context", GoImportPath: "context"}), ", *", method.Input.GoIdent, ") (*", method.Output.GoIdent, ", error)")
 	}
@@ -95,9 +95,9 @@ func generateServerInterface(g *protogen.GeneratedFile, service *protogen.Servic
 }
 
 func generateServerRegistration(g *protogen.GeneratedFile, service *protogen.Service, serviceName string) {
-	g.P("// Register", serviceName, "QServer registers the ", serviceName, " server implementation")
+	g.P("// Register", serviceName, "Consumer registers the ", serviceName, " consumer implementation")
 	g.P("// with the provided queue adapter and configuration.")
-	g.P("func Register", serviceName, "QServer(adapter ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "QueueAdapter", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ", srv ", serviceName, "QServer, opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "ServerOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") *", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Server", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), " {")
+	g.P("func Register", serviceName, "Consumer(adapter ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "QueueAdapter", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ", srv ", serviceName, "Consumer, opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "ServerOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") *", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Server", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), " {")
 	g.P("	// Create server with options - options are applied inside NewServer")
 	g.P("	s := ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "NewServer", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), "(adapter, opts...)")
 	g.P()
@@ -115,8 +115,8 @@ func generateServerRegistration(g *protogen.GeneratedFile, service *protogen.Ser
 }
 
 func generateClientInterface(g *protogen.GeneratedFile, service *protogen.Service, serviceName string) {
-	g.P("// ", serviceName, "QClient is the client API for ", serviceName, " service with grpcq.")
-	g.P("type ", serviceName, "QClient interface {")
+	g.P("// ", serviceName, "Producer is the client API for ", serviceName, " service with grpcq.")
+	g.P("type ", serviceName, "Producer interface {")
 	for _, method := range service.Methods {
 		g.P("	", method.GoName, "(ctx ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Context", GoImportPath: "context"}), ", in *", method.Input.GoIdent, ", opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "CallOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") (*", method.Output.GoIdent, ", error)")
 	}
@@ -124,7 +124,7 @@ func generateClientInterface(g *protogen.GeneratedFile, service *protogen.Servic
 }
 
 func generateClientImpl(g *protogen.GeneratedFile, service *protogen.Service, serviceName string) {
-	clientStructName := unexport(serviceName) + "QClient"
+	clientStructName := unexport(serviceName) + "Producer"
 	fullServiceName := string(service.Desc.FullName())
 
 	g.P("type ", clientStructName, " struct {")
@@ -132,8 +132,8 @@ func generateClientImpl(g *protogen.GeneratedFile, service *protogen.Service, se
 	g.P("}")
 	g.P()
 
-	g.P("// New", serviceName, "QClient creates a new ", serviceName, " client for grpcq.")
-	g.P("func New", serviceName, "QClient(adapter ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "QueueAdapter", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ", opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "ClientOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") ", serviceName, "QClient {")
+	g.P("// New", serviceName, "Producer creates a new ", serviceName, " producer for grpcq.")
+	g.P("func New", serviceName, "Producer(adapter ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "QueueAdapter", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ", opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "ClientOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") ", serviceName, "Producer {")
 	g.P("	return &", clientStructName, "{")
 	g.P("		cc: ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "NewClient", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), "(adapter, opts...),")
 	g.P("	}")

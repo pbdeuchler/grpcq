@@ -144,7 +144,7 @@ func runAsyncServer(ctx context.Context, sigCh chan os.Signal) {
 	queueServer, queueErrCh := startQueuePublishServer(*queueListenAddr, adapter)
 
 	svc := NewUserService()
-	server := userpb.RegisterUserServiceQServer(
+	server := userpb.RegisterUserServiceConsumer(
 		adapter,
 		svc,
 		grpcq.WithQueueName(queueName),
@@ -206,7 +206,7 @@ func runAsyncServer(ctx context.Context, sigCh chan os.Signal) {
 func runAsyncClient(ctx context.Context) {
 	adapter := memory.NewRemoteAdapter(*queueEndpoint)
 
-	client := userpb.NewUserServiceQClient(
+	client := userpb.NewUserServiceProducer(
 		adapter,
 		grpcq.WithClientQueueName(queueName),
 		grpcq.WithOriginator("example-client"),
@@ -247,7 +247,7 @@ func runDemo(ctx context.Context, sigCh chan os.Signal) {
 	queueServer, queueErrCh := startQueuePublishServer(*queueListenAddr, adapter)
 
 	svc := NewUserService()
-	server := userpb.RegisterUserServiceQServer(
+	server := userpb.RegisterUserServiceConsumer(
 		adapter,
 		svc,
 		grpcq.WithQueueName(queueName),
@@ -263,7 +263,7 @@ func runDemo(ctx context.Context, sigCh chan os.Signal) {
 	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 
-	client := userpb.NewUserServiceQClient(
+	client := userpb.NewUserServiceProducer(
 		memory.NewRemoteAdapter(*queueEndpoint),
 		grpcq.WithClientQueueName(queueName),
 		grpcq.WithOriginator("demo-client"),

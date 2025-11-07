@@ -10,22 +10,18 @@ import (
 	grpcq "github.com/pbdeuchler/grpcq/go/grpcq"
 )
 
-// UserServiceQServer is the server API for UserService service with grpcq.
+// UserServiceConsumer is the server API for UserService service with grpcq.
 // This interface is compatible with the gRPC UserServiceServer interface.
 // Implementations should embed the gRPC Unimplemented server for compatibility.
-type UserServiceQServer interface {
+type UserServiceConsumer interface {
 	CreateUser(context.Context, *CreateUserRequest) (*CreateUserResponse, error)
 	GetUser(context.Context, *GetUserRequest) (*GetUserResponse, error)
 }
 
-// RegisterUserServiceQServer registers the UserService server implementation
+// RegisterUserServiceConsumer registers the UserService consumer implementation
 // with the provided queue adapter and configuration.
-func RegisterUserServiceQServer(adapter grpcq.QueueAdapter, srv UserServiceQServer, opts ...grpcq.ServerOption) *grpcq.Server {
-	cfg := &grpcq.ServerConfig{}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
+func RegisterUserServiceConsumer(adapter grpcq.QueueAdapter, srv UserServiceConsumer, opts ...grpcq.ServerOption) *grpcq.Server {
+	// Create server with options - options are applied inside NewServer
 	s := grpcq.NewServer(adapter, opts...)
 
 	s.RegisterMethod("userservice.UserService", "CreateUser", func(ctx context.Context, req interface{}) (interface{}, error) {
@@ -38,24 +34,24 @@ func RegisterUserServiceQServer(adapter grpcq.QueueAdapter, srv UserServiceQServ
 	return s
 }
 
-// UserServiceQClient is the client API for UserService service with grpcq.
-type UserServiceQClient interface {
+// UserServiceProducer is the client API for UserService service with grpcq.
+type UserServiceProducer interface {
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpcq.CallOption) (*CreateUserResponse, error)
 	GetUser(ctx context.Context, in *GetUserRequest, opts ...grpcq.CallOption) (*GetUserResponse, error)
 }
 
-type userServiceQClient struct {
+type userServiceProducer struct {
 	cc *grpcq.Client
 }
 
-// NewUserServiceQClient creates a new UserService client for grpcq.
-func NewUserServiceQClient(adapter grpcq.QueueAdapter, opts ...grpcq.ClientOption) UserServiceQClient {
-	return &userServiceQClient{
+// NewUserServiceProducer creates a new UserService producer for grpcq.
+func NewUserServiceProducer(adapter grpcq.QueueAdapter, opts ...grpcq.ClientOption) UserServiceProducer {
+	return &userServiceProducer{
 		cc: grpcq.NewClient(adapter, opts...),
 	}
 }
 
-func (c *userServiceQClient) CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpcq.CallOption) (*CreateUserResponse, error) {
+func (c *userServiceProducer) CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpcq.CallOption) (*CreateUserResponse, error) {
 	out := new(CreateUserResponse)
 	err := c.cc.Invoke(ctx, "userservice.UserService", "CreateUser", in, out, opts...)
 	if err != nil {
@@ -64,7 +60,7 @@ func (c *userServiceQClient) CreateUser(ctx context.Context, in *CreateUserReque
 	return out, nil
 }
 
-func (c *userServiceQClient) GetUser(ctx context.Context, in *GetUserRequest, opts ...grpcq.CallOption) (*GetUserResponse, error) {
+func (c *userServiceProducer) GetUser(ctx context.Context, in *GetUserRequest, opts ...grpcq.CallOption) (*GetUserResponse, error) {
 	out := new(GetUserResponse)
 	err := c.cc.Invoke(ctx, "userservice.UserService", "GetUser", in, out, opts...)
 	if err != nil {
@@ -72,4 +68,3 @@ func (c *userServiceQClient) GetUser(ctx context.Context, in *GetUserRequest, op
 	}
 	return out, nil
 }
-

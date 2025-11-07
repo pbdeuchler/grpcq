@@ -8,10 +8,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Client represents a grpcq client that publishes messages to a queue.
+// Client represents a grpcq client that produces messages to a queue.
 type Client struct {
-	publisher *core.Publisher
-	config    *ClientConfig
+	producer *core.Producer
+	config   *ClientConfig
 }
 
 // ClientConfig contains configuration for a grpcq client.
@@ -93,8 +93,8 @@ func NewClient(adapter QueueAdapter, opts ...ClientOption) *Client {
 	}
 
 	return &Client{
-		publisher: core.NewPublisher(adapter, config.Originator),
-		config:    config,
+		producer: core.NewProducer(adapter, config.Originator),
+		config:   config,
 	}
 }
 
@@ -129,8 +129,8 @@ func (c *Client) Invoke(
 		return fmt.Errorf("request must be a proto.Message")
 	}
 
-	// Publish message
-	err := c.publisher.Send(
+	// Produce message
+	err := c.producer.Send(
 		ctx,
 		callOpts.queueName,
 		serviceName,

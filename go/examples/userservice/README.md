@@ -1,57 +1,79 @@
 # User Service Example
 
-This example demonstrates grpcq's gRPC interoperability - how to write a service implementation once and run it in both **synchronous (traditional gRPC)** and **asynchronous (queue-based)** modes.
+A complete example showing how to use grpcq with the same service implementation for both gRPC and queue modes.
 
-## Key Concept
+## Quick Start
 
-The same service implementation code works for both:
+```bash
+# Run demo (async server + client with in-memory queue)
+go run main.go
 
-- Traditional gRPC server/client (synchronous, request-response)
-- grpcq worker/publisher (asynchronous, queue-based)
+# Run specific modes
+go run main.go -mode sync-server   # Traditional gRPC server
+go run main.go -mode sync-client   # Traditional gRPC client
+go run main.go -mode async-server  # Queue consumer
+go run main.go -mode async-client  # Queue producer
+```
 
-This enables gradual migration, flexible testing, and deployment options without code changes.
+## Service Implementation
 
-## Running the Example
+The service implementation (`service.go`) works for both modes:
 
-The example supports multiple modes:
+```go
+type UserService struct {
+    userpb.UnimplementedUserServiceServer
+    users map[string]*User
+}
+
+func (s *UserService) CreateUser(ctx context.Context, req *userpb.CreateUserRequest) (*userpb.CreateUserResponse, error) {
+    // Same implementation for both sync and async
+    user := &User{
+        Id:    generateID(),
+        Name:  req.Name,
+        Email: req.Email,
+    }
+    s.users[user.Id] = user
+    return &userpb.CreateUserResponse{
+        UserId: user.Id,
+        Name:   user.Name,
+        Email:  user.Email,
+    }, nil
+}
+```
+
+## Running Modes
 
 ### Demo Mode (Default)
-
-Runs both async worker and client together:
-
+Runs both async server and client with an in-memory queue:
 ```bash
-cd go/examples/userservice
-go run . -mode demo
+go run main.go
 ```
 
-### Synchronous gRPC
-
-**Start the gRPC server:**
-
+### Synchronous (Traditional gRPC)
 ```bash
-go run . -mode sync-server
+# Terminal 1: Start server
+go run main.go -mode sync-server
+
+# Terminal 2: Run client
+go run main.go -mode sync-client
 ```
 
-**In another terminal, run the client:**
-
+### Asynchronous (Queue-based)
 ```bash
-go run . -mode sync-client
+# Terminal 1: Start consumer
+go run main.go -mode async-server
+
+# Terminal 2: Send messages
+go run main.go -mode async-client
 ```
 
-### Asynchronous Queue-Based
+## Custom Queue Endpoints
 
-The async modes share work through an HTTP publish endpoint that fronts the in-memory adapter. Run the worker with a listener address (defaults to `127.0.0.1:8081`):
-
-**Start the worker:**
-
+Override the default in-memory queue endpoints:
 ```bash
-go run . -mode async-server -queue_listen 127.0.0.1:8081
+# Server with custom listen address
+go run main.go -mode async-server -queue_listen 0.0.0.0:9090
+
+# Client with custom endpoint
+go run main.go -mode async-client -queue_endpoint http://localhost:9090
 ```
-
-**In another terminal, run the publisher pointing at the same endpoint:**
-
-```bash
-go run . -mode async-client -queue_endpoint http://127.0.0.1:8081
-```
-
-You can pick any address/port pair as long as both processes agree. For example, to expose the demo on all interfaces use `-queue_listen 0.0.0.0:9000` on the server and `-queue_endpoint http://localhost:9000` on the client.

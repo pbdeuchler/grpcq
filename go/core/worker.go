@@ -14,9 +14,11 @@ type Worker struct {
 	config   WorkerConfig
 
 	// Internal state
-	wg       sync.WaitGroup
-	stopOnce sync.Once
-	stopCh   chan struct{}
+	wg           sync.WaitGroup
+	stopOnce     sync.Once
+	stopCh       chan struct{}
+	shutdownErr  error
+	shutdownDone chan struct{}
 }
 
 // NewWorker creates a new Worker with the given adapter, registry, and config.
@@ -33,10 +35,11 @@ func NewWorker(adapter QueueAdapter, registry *Registry, config WorkerConfig) *W
 	}
 
 	return &Worker{
-		adapter:  adapter,
-		registry: registry,
-		config:   config,
-		stopCh:   make(chan struct{}),
+		adapter:      adapter,
+		registry:     registry,
+		config:       config,
+		stopCh:       make(chan struct{}),
+		shutdownDone: make(chan struct{}),
 	}
 }
 
@@ -102,13 +105,17 @@ func (w *Worker) Start(ctx context.Context) error {
 
 // Stop gracefully shuts down the worker.
 // It waits for all in-flight messages to complete processing.
+// Multiple concurrent calls to Stop will all receive the same error result.
 func (w *Worker) Stop(ctx context.Context) error {
-	var shutdownErr error
 	w.stopOnce.Do(func() {
 		close(w.stopCh)
-		shutdownErr = w.shutdown(ctx)
+		w.shutdownErr = w.shutdown(ctx)
+		close(w.shutdownDone)
 	})
-	return shutdownErr
+
+	// Wait for shutdown to complete
+	<-w.shutdownDone
+	return w.shutdownErr
 }
 
 // shutdown waits for all in-flight messages to complete.
@@ -177,40 +184,55 @@ func NewWorkerPool(adapter QueueAdapter, registry *Registry, config WorkerConfig
 
 // Start starts all workers in the pool.
 // If any worker encounters an error, all workers are stopped gracefully.
+// The function blocks until the parent context is cancelled or an error occurs.
 func (p *WorkerPool) Start(ctx context.Context) error {
 	// Create a child context that we control
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	defer p.cancel() // Ensure cleanup on return
 
 	errCh := make(chan error, len(p.workers))
+	doneCh := make(chan struct{})
 
+	// Start all workers
 	for _, worker := range p.workers {
 		p.wg.Add(1)
 		go func(w *Worker) {
 			defer p.wg.Done()
 			if err := w.Start(p.ctx); err != nil && err != context.Canceled {
-				errCh <- err
+				select {
+				case errCh <- err:
+				default:
+					// Channel full, error already reported
+				}
 				// Cancel context to stop other workers
 				p.cancel()
 			}
 		}(worker)
 	}
 
-	// Wait for all workers to complete
+	// Monitor completion
 	go func() {
 		p.wg.Wait()
-		close(errCh)
+		close(doneCh)
 	}()
 
-	// Collect all errors
-	var firstErr error
-	for err := range errCh {
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+	// Wait for either context cancellation, error, or completion
+	select {
+	case <-ctx.Done():
+		// Parent context cancelled, cancel our context
+		p.cancel()
+		// Wait for workers to complete
+		<-doneCh
+		return ctx.Err()
+	case err := <-errCh:
+		// Error occurred, context already cancelled
+		// Wait for workers to complete
+		<-doneCh
+		return err
+	case <-doneCh:
+		// All workers completed normally
+		return nil
 	}
-
-	return firstErr
 }
 
 // Stop stops all workers in the pool gracefully.
