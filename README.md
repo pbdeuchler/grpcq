@@ -6,6 +6,9 @@ An async gRPC queue abstraction library for building scalable, queue-based micro
 
 grpcq enables you to convert traditional synchronous gRPC services into asynchronous, queue-based architectures. It provides a simple abstraction layer that works with multiple message queue systems (SQS, Kafka, RabbitMQ, etc.) and supports multiple programming languages (Go, Python, Rust, TypeScript).
 
+> [!NOTE]
+> This project was mostly built with LLMs to test the new Claude Code Web product. The code here has not been tested in production or rigorously reviewed (yet). Use at your own risk.
+
 ### Key Features
 
 - **Protocol Buffers Native**: Generate grpcq code with `protoc-gen-grpcq` plugin
