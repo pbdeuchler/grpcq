@@ -2,7 +2,8 @@
 // This plugin generates grpcq service stubs for Protocol Buffer services.
 //
 // Usage:
-//   protoc --grpcq_out=. --grpcq_opt=paths=source_relative your.proto
+//
+//	protoc --grpcq_out=. --grpcq_opt=paths=source_relative your.proto
 package main
 
 import (
@@ -118,7 +119,7 @@ func generateClientInterface(g *protogen.GeneratedFile, service *protogen.Servic
 	g.P("// ", serviceName, "Producer is the client API for ", serviceName, " service with grpcq.")
 	g.P("type ", serviceName, "Producer interface {")
 	for _, method := range service.Methods {
-		g.P("	", method.GoName, "(ctx ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Context", GoImportPath: "context"}), ", in *", method.Input.GoIdent, ", opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "CallOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") (*", method.Output.GoIdent, ", error)")
+		g.P("	", method.GoName, "(ctx ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Context", GoImportPath: "context"}), ", in *", method.Input.GoIdent, ", opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "CallOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") error")
 	}
 	g.P("}")
 }
@@ -142,13 +143,8 @@ func generateClientImpl(g *protogen.GeneratedFile, service *protogen.Service, se
 
 	// Generate method implementations
 	for _, method := range service.Methods {
-		g.P("func (c *", clientStructName, ") ", method.GoName, "(ctx ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Context", GoImportPath: "context"}), ", in *", method.Input.GoIdent, ", opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "CallOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") (*", method.Output.GoIdent, ", error) {")
-		g.P("	out := new(", method.Output.GoIdent, ")")
-		g.P("	err := c.cc.Invoke(ctx, \"", fullServiceName, "\", \"", method.Desc.Name(), "\", in, out, opts...)")
-		g.P("	if err != nil {")
-		g.P("		return nil, err")
-		g.P("	}")
-		g.P("	return out, nil")
+		g.P("func (c *", clientStructName, ") ", method.GoName, "(ctx ", g.QualifiedGoIdent(protogen.GoIdent{GoName: "Context", GoImportPath: "context"}), ", in *", method.Input.GoIdent, ", opts ...", g.QualifiedGoIdent(protogen.GoIdent{GoName: "CallOption", GoImportPath: "github.com/pbdeuchler/grpcq/go/grpcq"}), ") error {")
+		g.P("	return c.cc.Invoke(ctx, \"", fullServiceName, "\", \"", method.Desc.Name(), "\", in, opts...)")
 		g.P("}")
 		g.P()
 	}

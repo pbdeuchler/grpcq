@@ -40,7 +40,7 @@ func RegisterUserServiceConsumer(adapter, srv, opts...) *grpcq.Server
 ```go
 // Interface
 type UserServiceProducer interface {
-    CreateUser(ctx, req, opts...) (*CreateUserResponse, error)
+    CreateUser(ctx, req, opts...) error
 }
 
 // Constructor
@@ -93,6 +93,6 @@ See [go/examples/userservice](../../go/examples/userservice/)
 
 ## Limitations
 
-- Fire-and-forget only (no request-response yet)
+- Fire-and-forget only: generated producer methods return `error` because no response path exists yet
 - Unary RPCs only (no streaming)
 - No interceptor support

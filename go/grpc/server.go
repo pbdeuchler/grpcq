@@ -43,29 +43,21 @@ type MethodHandler struct {
 func UnaryServerAdapter(
 	serviceName string,
 	methodName string,
-	methodFunc interface{},
+	methodFunc any,
 	newRequest func() proto.Message,
 ) MethodHandler {
 	return MethodHandler{
 		ServiceName: serviceName,
 		MethodName:  methodName,
 		Handler: func(ctx context.Context, msg *pb.Message) error {
-			// Create new request instance
 			req := newRequest()
-
-			// Unmarshal the payload
 			if err := proto.Unmarshal(msg.Payload, req); err != nil {
 				return fmt.Errorf("failed to unmarshal request: %w", err)
 			}
 
-			resp, err := invokeUnaryMethod(methodFunc, ctx, req)
-			if err != nil {
+			if err := invokeUnaryMethod(methodFunc, ctx, req); err != nil {
 				return fmt.Errorf("method %s failed: %w", methodName, err)
 			}
-
-			// For async processing, we don't return the response directly
-			// In a full implementation, this could publish a response message
-			_ = resp
 			return nil
 		},
 	}
@@ -120,14 +112,9 @@ func (s *ServerAdapter) RegisterUnary(
 			return fmt.Errorf("failed to unmarshal request: %w", err)
 		}
 
-		resp, err := methodFunc(ctx, req)
-		if err != nil {
+		if _, err := methodFunc(ctx, req); err != nil {
 			return fmt.Errorf("method %s failed: %w", methodName, err)
 		}
-
-		// In async mode, we typically don't send responses back
-		// But we could optionally publish to a response queue here
-		_ = resp
 		return nil
 	}
 
@@ -161,66 +148,71 @@ func WrapUnaryMethod[TReq proto.Message, TResp proto.Message](
 			return fmt.Errorf("failed to unmarshal request: %w", err)
 		}
 
-		resp, err := methodFunc(ctx, req)
-		if err != nil {
-			return err
-		}
-
-		// For async, we don't return the response
-		// In a complete implementation, this could publish to a response topic
-		_ = resp
-		return nil
+		_, err := methodFunc(ctx, req)
+		return err
 	}
 }
 
 var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var errorType = reflect.TypeOf((*error)(nil)).Elem()
 
-func invokeUnaryMethod(methodFunc interface{}, ctx context.Context, req proto.Message) (proto.Message, error) {
-	switch fn := methodFunc.(type) {
-	case func(context.Context, proto.Message) (proto.Message, error):
-		return fn(ctx, req)
-	case func(context.Context, proto.Message) error:
-		return nil, fn(ctx, req)
-	}
-
+func invokeUnaryMethod(methodFunc any, ctx context.Context, req proto.Message) error {
 	fnValue := reflect.ValueOf(methodFunc)
-	if fnValue.Kind() != reflect.Func {
-		return nil, fmt.Errorf("methodFunc must be a function")
+	if !fnValue.IsValid() || fnValue.Kind() != reflect.Func {
+		return fmt.Errorf("methodFunc must be a function")
 	}
 
 	fnType := fnValue.Type()
-	if fnType.NumIn() != 2 || !fnType.In(0).AssignableTo(contextType) {
-		return nil, fmt.Errorf("unsupported method signature")
+	if fnType.NumIn() != 2 || !contextType.AssignableTo(fnType.In(0)) {
+		return fmt.Errorf("unsupported method signature")
 	}
 
 	reqValue := reflect.ValueOf(req)
+	if !reqValue.IsValid() {
+		return fmt.Errorf("request cannot be nil")
+	}
 	if !reqValue.Type().AssignableTo(fnType.In(1)) {
-		return nil, fmt.Errorf("unsupported request type: got %s, want %s", reqValue.Type(), fnType.In(1))
+		return fmt.Errorf("unsupported request type: got %s, want %s", reqValue.Type(), fnType.In(1))
 	}
 
-	if fnType.NumOut() != 2 {
-		return nil, fmt.Errorf("unsupported method return signature")
+	// Validate return signature: (error) or (proto.Message, error)
+	switch fnType.NumOut() {
+	case 1:
+		if !fnType.Out(0).Implements(errorType) {
+			return fmt.Errorf("unsupported method return signature")
+		}
+	case 2:
+		if !fnType.Out(1).Implements(errorType) {
+			return fmt.Errorf("second return value must implement error")
+		}
+	default:
+		return fmt.Errorf("unsupported method return signature")
 	}
 
 	results := fnValue.Call([]reflect.Value{reflect.ValueOf(ctx), reqValue})
-	respVal := results[0]
-	errVal := results[1]
 
-	if !errVal.IsNil() {
-		err, ok := errVal.Interface().(error)
-		if !ok {
-			return nil, fmt.Errorf("method returned non-error type")
-		}
-		return nil, err
+	// Extract the error from the last return value
+	errIdx := len(results) - 1
+	return valueAsError(results[errIdx])
+}
+
+func valueAsError(v reflect.Value) error {
+	if isNilValue(v) {
+		return nil
 	}
 
-	if respVal.IsNil() {
-		return nil, nil
-	}
-
-	resp, ok := respVal.Interface().(proto.Message)
+	err, ok := v.Interface().(error)
 	if !ok {
-		return nil, fmt.Errorf("response does not implement proto.Message")
+		return fmt.Errorf("method returned non-error type")
 	}
-	return resp, nil
+	return err
+}
+
+func isNilValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }

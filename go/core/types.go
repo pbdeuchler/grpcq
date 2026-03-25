@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"log/slog"
 
 	pb "github.com/pbdeuchler/grpcq/go/proto"
 )
@@ -71,6 +72,9 @@ type WorkerConfig struct {
 	// PollIntervalMs is how long to wait between poll attempts when no messages are available
 	// Default: 1000 (1 second)
 	PollIntervalMs int
+
+	// Logger is used for operational logging. If nil, slog.Default() is used.
+	Logger *slog.Logger
 }
 
 // DefaultWorkerConfig returns a WorkerConfig with sensible defaults.

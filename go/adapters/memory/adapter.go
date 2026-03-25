@@ -83,6 +83,13 @@ func NewAdapter(bufferSize int) *Adapter {
 
 // Publish sends messages to the specified queue.
 func (a *Adapter) Publish(ctx context.Context, queueName string, messages ...*pb.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -94,16 +101,14 @@ func (a *Adapter) Publish(ctx context.Context, queueName string, messages ...*pb
 
 	queue := a.queues[queueName]
 
-	// Publish all messages
+	if len(messages) > cap(queue)-len(queue) {
+		return fmt.Errorf("queue %s is full", queueName)
+	}
+
+	// Safe to send without select: the capacity check above guarantees enough
+	// room while we hold the lock, so these sends will never block.
 	for _, msg := range messages {
-		select {
-		case queue <- &messageWithReceipt{message: msg}:
-			// Message published successfully
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			return fmt.Errorf("queue %s is full", queueName)
-		}
+		queue <- &messageWithReceipt{message: msg}
 	}
 
 	return nil

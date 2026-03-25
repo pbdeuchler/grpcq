@@ -2,7 +2,6 @@ package grpcq
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/pbdeuchler/grpcq/go/core"
 	"google.golang.org/protobuf/proto"
@@ -99,19 +98,17 @@ func NewClient(adapter QueueAdapter, opts ...ClientOption) *Client {
 }
 
 // Invoke performs a unary RPC call by publishing a message to the queue.
-// This is called by generated client code.
+// This is called by generated async producer code.
 //
 // serviceName: Full service name (e.g., "userservice.UserService")
 // methodName: Method name (e.g., "CreateUser")
 // req: Request proto message
-// resp: Response proto message (will be zero value for async fire-and-forget)
 // opts: Call options
 func (c *Client) Invoke(
 	ctx context.Context,
 	serviceName string,
 	methodName string,
-	req interface{},
-	resp interface{},
+	req proto.Message,
 	opts ...CallOption,
 ) error {
 	// Apply call options
@@ -123,28 +120,14 @@ func (c *Client) Invoke(
 		opt.apply(callOpts)
 	}
 
-	// Marshal request
-	reqProto, ok := req.(proto.Message)
-	if !ok {
-		return fmt.Errorf("request must be a proto.Message")
-	}
-
-	// Produce message
-	err := c.producer.Send(
+	return c.producer.Send(
 		ctx,
 		callOpts.queueName,
 		serviceName,
 		methodName,
-		reqProto,
+		req,
 		callOpts.metadata,
 	)
-	if err != nil {
-		return fmt.Errorf("failed to publish message: %w", err)
-	}
-
-	// Note: resp is not populated since this is async fire-and-forget
-	// In the future, we can implement request-response patterns
-	return nil
 }
 
 // Close closes the client and releases resources.

@@ -2,28 +2,33 @@ package core
 
 import (
 	"context"
-	"log"
+	"errors"
+	"log/slog"
 	"sync"
 	"time"
 )
+
+var errWorkerStopped = errors.New("worker stopped")
 
 // Worker consumes messages from a queue and processes them using registered handlers.
 type Worker struct {
 	adapter  QueueAdapter
 	registry *Registry
 	config   WorkerConfig
+	logger   *slog.Logger
 
 	// Internal state
-	wg           sync.WaitGroup
-	stopOnce     sync.Once
-	stopCh       chan struct{}
-	shutdownErr  error
-	shutdownDone chan struct{}
+	wg       sync.WaitGroup
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	done     chan struct{} // closed when Start() returns
+	startErr error        // result of Start(), readable after done is closed
 }
 
 // NewWorker creates a new Worker with the given adapter, registry, and config.
+// An optional *slog.Logger can be provided via WorkerConfig.Logger; if nil,
+// slog.Default() is used.
 func NewWorker(adapter QueueAdapter, registry *Registry, config WorkerConfig) *Worker {
-	// Apply defaults
 	if config.MaxBatch <= 0 {
 		config.MaxBatch = 10
 	}
@@ -34,104 +39,108 @@ func NewWorker(adapter QueueAdapter, registry *Registry, config WorkerConfig) *W
 		config.PollIntervalMs = 1000
 	}
 
+	l := config.Logger
+	if l == nil {
+		l = slog.Default()
+	}
+
 	return &Worker{
-		adapter:      adapter,
-		registry:     registry,
-		config:       config,
-		stopCh:       make(chan struct{}),
-		shutdownDone: make(chan struct{}),
+		adapter:  adapter,
+		registry: registry,
+		config:   config,
+		logger:   l,
+		stopCh:   make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 }
 
 // Start begins consuming and processing messages from the queue.
 // This method blocks until the context is cancelled or Stop is called.
+// The returned error is also available to concurrent Stop callers via the done channel.
 func (w *Worker) Start(ctx context.Context) error {
-	// Create a semaphore to limit concurrency
-	sem := make(chan struct{}, w.config.Concurrency)
+	defer func() {
+		// Drain in-flight work before signalling completion.
+		w.wg.Wait()
+		close(w.done)
+	}()
 
+	sem := make(chan struct{}, w.config.Concurrency)
 	pollInterval := time.Duration(w.config.PollIntervalMs) * time.Millisecond
 
 	for {
 		select {
 		case <-ctx.Done():
-			if err := w.shutdown(context.Background()); err != nil {
-				return err
-			}
-			return ctx.Err()
+			w.startErr = ctx.Err()
+			return w.startErr
 		case <-w.stopCh:
-			if err := w.shutdown(context.Background()); err != nil {
-				return err
-			}
 			return nil
 		default:
 		}
 
-		// Consume a batch of messages
 		result, err := w.adapter.Consume(ctx, w.config.QueueName, w.config.MaxBatch)
 		if err != nil {
-			// Log the error but continue processing
-			log.Printf("error consuming messages: %v", err)
-			time.Sleep(pollInterval)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				w.startErr = ctxErr
+				return w.startErr
+			}
+			w.startErr = err
+			return w.startErr
+		}
+
+		if result == nil || len(result.Items) == 0 {
+			if err := w.waitForNextPoll(ctx, pollInterval); err != nil {
+				if errors.Is(err, errWorkerStopped) {
+					return nil
+				}
+				w.startErr = err
+				return w.startErr
+			}
 			continue
 		}
 
-		// If no messages, wait before polling again
-		if len(result.Items) == 0 {
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		// Process each message concurrently
 		for _, item := range result.Items {
-			// Acquire semaphore slot
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
-				return w.shutdown(ctx)
+				w.startErr = ctx.Err()
+				return w.startErr
 			case <-w.stopCh:
-				return w.shutdown(ctx)
+				return nil
 			}
 
 			w.wg.Add(1)
 			go func(item MessageItem) {
 				defer w.wg.Done()
-				defer func() { <-sem }() // Release semaphore slot
-
+				defer func() { <-sem }()
 				w.processMessage(ctx, item)
 			}(item)
 		}
 	}
 }
 
-// Stop gracefully shuts down the worker.
-// It waits for all in-flight messages to complete processing.
-// Multiple concurrent calls to Stop will all receive the same error result.
-func (w *Worker) Stop(ctx context.Context) error {
-	w.stopOnce.Do(func() {
-		close(w.stopCh)
-		w.shutdownErr = w.shutdown(ctx)
-		close(w.shutdownDone)
-	})
-
-	// Wait for shutdown to complete
-	<-w.shutdownDone
-	return w.shutdownErr
+// Stop gracefully signals the worker to stop and waits for in-flight work to drain.
+// Multiple concurrent calls to Stop all block until Start returns.
+func (w *Worker) Stop(_ context.Context) error {
+	w.stopOnce.Do(func() { close(w.stopCh) })
+	<-w.done
+	return w.startErr
 }
 
-// shutdown waits for all in-flight messages to complete.
-func (w *Worker) shutdown(ctx context.Context) error {
-	// Wait for all message processing to complete
-	done := make(chan struct{})
-	go func() {
-		w.wg.Wait()
-		close(done)
-	}()
+func (w *Worker) waitForNextPoll(ctx context.Context, pollInterval time.Duration) error {
+	if pollInterval <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(pollInterval)
+	defer timer.Stop()
 
 	select {
-	case <-done:
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-w.stopCh:
+		return errWorkerStopped
 	}
 }
 
@@ -139,46 +148,54 @@ func (w *Worker) shutdown(ctx context.Context) error {
 func (w *Worker) processMessage(ctx context.Context, item MessageItem) {
 	msg := item.Message
 
-	// Log the message being processed
-	log.Printf("processing message: id=%s topic=%s action=%s", msg.MessageId, msg.Topic, msg.Action)
+	w.logger.InfoContext(ctx, "processing message",
+		slog.String("message_id", msg.MessageId),
+		slog.String("topic", msg.Topic),
+		slog.String("action", msg.Action))
 
-	// Handle the message using the registry
 	err := w.registry.Handle(ctx, msg)
 
 	if err != nil {
-		// Handler failed, nack the message
-		log.Printf("handler failed for message %s: %v", msg.MessageId, err)
+		w.logger.ErrorContext(ctx, "handler failed",
+			slog.String("message_id", msg.MessageId),
+			slog.Any("error", err))
 		if nackErr := item.Receipt.Nack(ctx); nackErr != nil {
-			log.Printf("failed to nack message %s: %v", msg.MessageId, nackErr)
+			w.logger.ErrorContext(ctx, "failed to nack message",
+				slog.String("message_id", msg.MessageId),
+				slog.Any("error", nackErr))
 		}
 		return
 	}
 
-	// Handler succeeded, ack the message
 	if ackErr := item.Receipt.Ack(ctx); ackErr != nil {
-		log.Printf("failed to ack message %s: %v", msg.MessageId, ackErr)
+		w.logger.ErrorContext(ctx, "failed to ack message",
+			slog.String("message_id", msg.MessageId),
+			slog.Any("error", ackErr))
 		return
 	}
 
-	log.Printf("successfully processed message: id=%s", msg.MessageId)
+	w.logger.InfoContext(ctx, "message processed",
+		slog.String("message_id", msg.MessageId))
 }
 
 // WorkerPool manages multiple workers for horizontal scaling.
 type WorkerPool struct {
 	workers []*Worker
-	wg      sync.WaitGroup
-	ctx     context.Context
-	cancel  context.CancelFunc
+	stopCh  chan struct{} // signals all workers to stop
+	once    sync.Once
+	done    chan struct{} // closed when Start returns
 }
 
 // NewWorkerPool creates a pool of workers.
 func NewWorkerPool(adapter QueueAdapter, registry *Registry, config WorkerConfig, numWorkers int) *WorkerPool {
 	workers := make([]*Worker, numWorkers)
-	for i := 0; i < numWorkers; i++ {
+	for i := range numWorkers {
 		workers[i] = NewWorker(adapter, registry, config)
 	}
 	return &WorkerPool{
 		workers: workers,
+		stopCh:  make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -186,73 +203,59 @@ func NewWorkerPool(adapter QueueAdapter, registry *Registry, config WorkerConfig
 // If any worker encounters an error, all workers are stopped gracefully.
 // The function blocks until the parent context is cancelled or an error occurs.
 func (p *WorkerPool) Start(ctx context.Context) error {
-	// Create a child context that we control
-	p.ctx, p.cancel = context.WithCancel(ctx)
-	defer p.cancel() // Ensure cleanup on return
+	defer close(p.done)
+
+	poolCtx, poolCancel := context.WithCancel(ctx)
+	defer poolCancel()
 
 	errCh := make(chan error, len(p.workers))
-	doneCh := make(chan struct{})
+	var wg sync.WaitGroup
 
-	// Start all workers
 	for _, worker := range p.workers {
-		p.wg.Add(1)
+		wg.Add(1)
 		go func(w *Worker) {
-			defer p.wg.Done()
-			if err := w.Start(p.ctx); err != nil && err != context.Canceled {
+			defer wg.Done()
+			if err := w.Start(poolCtx); err != nil && err != context.Canceled {
 				select {
 				case errCh <- err:
 				default:
-					// Channel full, error already reported
 				}
-				// Cancel context to stop other workers
-				p.cancel()
+				poolCancel()
 			}
 		}(worker)
 	}
 
-	// Monitor completion
+	// Also listen for external Stop signal
 	go func() {
-		p.wg.Wait()
+		select {
+		case <-p.stopCh:
+			poolCancel()
+		case <-poolCtx.Done():
+		}
+	}()
+
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
 		close(doneCh)
 	}()
 
-	// Wait for either context cancellation, error, or completion
 	select {
 	case <-ctx.Done():
-		// Parent context cancelled, cancel our context
-		p.cancel()
-		// Wait for workers to complete
+		poolCancel()
 		<-doneCh
 		return ctx.Err()
 	case err := <-errCh:
-		// Error occurred, context already cancelled
-		// Wait for workers to complete
 		<-doneCh
 		return err
 	case <-doneCh:
-		// All workers completed normally
 		return nil
 	}
 }
 
-// Stop stops all workers in the pool gracefully.
-func (p *WorkerPool) Stop(ctx context.Context) error {
-	// Cancel the pool context to signal shutdown
-	if p.cancel != nil {
-		p.cancel()
-	}
-
-	// Wait for all workers to complete with timeout from context
-	done := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+// Stop stops all workers in the pool gracefully and blocks until Start returns.
+func (p *WorkerPool) Stop(_ context.Context) error {
+	p.once.Do(func() { close(p.stopCh) })
+	<-p.done
+	return nil
 }
