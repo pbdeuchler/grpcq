@@ -188,3 +188,35 @@ func TestAdapterEmptyConsume(t *testing.T) {
 		t.Errorf("Expected 0 messages from empty queue, got %d", len(result.Items))
 	}
 }
+
+func TestAdapterPublishIsAllOrNothing(t *testing.T) {
+	adapter := NewAdapter(2)
+	ctx := context.Background()
+
+	if err := adapter.Publish(ctx, "test-queue", &pb.Message{MessageId: "msg-1"}); err != nil {
+		t.Fatalf("initial publish failed: %v", err)
+	}
+
+	err := adapter.Publish(
+		ctx,
+		"test-queue",
+		&pb.Message{MessageId: "msg-2"},
+		&pb.Message{MessageId: "msg-3"},
+	)
+	if err == nil {
+		t.Fatal("expected publish to fail when queue lacks room for the full batch")
+	}
+
+	if depth := adapter.QueueDepth("test-queue"); depth != 1 {
+		t.Fatalf("expected queue depth to remain 1 after failed batch, got %d", depth)
+	}
+
+	result, err := adapter.Consume(ctx, "test-queue", 10)
+	if err != nil {
+		t.Fatalf("consume failed: %v", err)
+	}
+
+	if len(result.Items) != 1 || result.Items[0].Message.MessageId != "msg-1" {
+		t.Fatalf("unexpected queue contents after failed batch: %+v", result.Items)
+	}
+}

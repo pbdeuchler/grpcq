@@ -2,6 +2,8 @@
 
 A complete example showing how to use grpcq with the same service implementation for both gRPC and queue modes.
 
+The async producer methods in the generated `grpcq` client return `error` only. They publish work to the queue and do not pretend to return a synchronous response.
+
 ## Quick Start
 
 ```bash

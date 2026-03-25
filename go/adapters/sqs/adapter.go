@@ -3,6 +3,7 @@ package sqs
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -77,16 +78,15 @@ func (a *Adapter) publishBatch(ctx context.Context, queueURL string, messages []
 	entries := make([]types.SendMessageBatchRequestEntry, len(messages))
 
 	for i, msg := range messages {
-		// Serialize the message
-		data, err := proto.Marshal(msg)
+		body, err := encodeMessageBody(msg)
 		if err != nil {
-			return fmt.Errorf("failed to marshal message %d: %w", i, err)
+			return fmt.Errorf("failed to encode message %d: %w", i, err)
 		}
 
 		// Create batch entry
 		entries[i] = types.SendMessageBatchRequestEntry{
 			Id:          aws.String(msg.MessageId),
-			MessageBody: aws.String(string(data)),
+			MessageBody: aws.String(body),
 			MessageAttributes: map[string]types.MessageAttributeValue{
 				"topic": {
 					DataType:    aws.String("String"),
@@ -150,10 +150,9 @@ func (a *Adapter) Consume(ctx context.Context, queueName string, maxBatch int) (
 	items := make([]core.MessageItem, 0, len(output.Messages))
 
 	for _, sqsMsg := range output.Messages {
-		// Deserialize the message
-		var msg pb.Message
-		if err := proto.Unmarshal([]byte(aws.ToString(sqsMsg.Body)), &msg); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal message: %w", err)
+		msg, err := decodeMessageBody(aws.ToString(sqsMsg.Body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode message: %w", err)
 		}
 
 		// Create receipt
@@ -164,7 +163,7 @@ func (a *Adapter) Consume(ctx context.Context, queueName string, maxBatch int) (
 		}
 
 		items = append(items, core.MessageItem{
-			Message: &msg,
+			Message: msg,
 			Receipt: receipt,
 		})
 	}
@@ -210,3 +209,28 @@ func (r *sqsReceipt) Nack(ctx context.Context) error {
 
 // Ensure Adapter implements QueueAdapter
 var _ core.QueueAdapter = (*Adapter)(nil)
+
+func encodeMessageBody(msg *pb.Message) (string, error) {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+func decodeMessageBody(body string) (*pb.Message, error) {
+	data, b64Err := base64.StdEncoding.DecodeString(body)
+	if b64Err == nil {
+		msg := &pb.Message{}
+		if err := proto.Unmarshal(data, msg); err == nil {
+			return msg, nil
+		}
+	}
+
+	// Fallback for legacy messages that stored raw bytes directly in the body.
+	msg := &pb.Message{}
+	if rawErr := proto.Unmarshal([]byte(body), msg); rawErr != nil {
+		return nil, fmt.Errorf("failed to decode message (base64: %v, raw: %w)", b64Err, rawErr)
+	}
+	return msg, nil
+}

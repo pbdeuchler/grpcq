@@ -10,21 +10,21 @@ import (
 )
 
 // AsyncClientConn implements grpc.ClientConnInterface but routes calls through
-// a grpcq publisher instead of making synchronous RPC calls.
+// a grpcq producer instead of making synchronous RPC calls.
 //
 // This allows generated gRPC client stubs to work with queue-based async messaging.
 // Note: Since queue-based messaging is fire-and-forget, responses are not returned.
 // The response will be a zero value of the response type.
 type AsyncClientConn struct {
-	publisher *core.Publisher
+	producer  *core.Producer
 	queueName string
 }
 
 // NewAsyncClientConn creates a new AsyncClientConn that routes gRPC calls
-// through the specified queue using the given publisher.
-func NewAsyncClientConn(publisher *core.Publisher, queueName string) *AsyncClientConn {
+// through the specified queue using the given producer.
+func NewAsyncClientConn(producer *core.Producer, queueName string) *AsyncClientConn {
 	return &AsyncClientConn{
-		publisher: publisher,
+		producer:  producer,
 		queueName: queueName,
 	}
 }
@@ -50,7 +50,7 @@ func (c *AsyncClientConn) Invoke(ctx context.Context, method string, args interf
 	metadata := extractMetadata(opts)
 
 	// Publish the message
-	if err := c.publisher.Send(ctx, c.queueName, serviceName, methodName, req, metadata); err != nil {
+	if err := c.producer.Send(ctx, c.queueName, serviceName, methodName, req, metadata); err != nil {
 		return fmt.Errorf("failed to publish message: %w", err)
 	}
 
@@ -103,16 +103,16 @@ func extractMetadata(opts []grpc.CallOption) map[string]string {
 	return make(map[string]string)
 }
 
-// ClientAdapter wraps a grpcq publisher to provide a gRPC-like client interface.
+// ClientAdapter wraps a grpcq producer to provide a gRPC-like client interface.
 type ClientAdapter struct {
-	publisher *core.Publisher
+	producer  *core.Producer
 	queueName string
 }
 
 // NewClientAdapter creates a new ClientAdapter.
-func NewClientAdapter(publisher *core.Publisher, queueName string) *ClientAdapter {
+func NewClientAdapter(producer *core.Producer, queueName string) *ClientAdapter {
 	return &ClientAdapter{
-		publisher: publisher,
+		producer:  producer,
 		queueName: queueName,
 	}
 }
@@ -121,9 +121,10 @@ func NewClientAdapter(publisher *core.Publisher, queueName string) *ClientAdapte
 // gRPC client constructors.
 //
 // Example:
-//   adapter := grpc.NewClientAdapter(publisher, "user-queue")
-//   client := userpb.NewUserServiceClient(adapter.Conn())
-//   // Now client methods will publish to the queue instead of making RPC calls
+//
+//	adapter := grpc.NewClientAdapter(producer, "user-queue")
+//	client := userpb.NewUserServiceClient(adapter.Conn())
+//	// Now client methods will publish to the queue instead of making RPC calls
 func (c *ClientAdapter) Conn() grpc.ClientConnInterface {
-	return NewAsyncClientConn(c.publisher, c.queueName)
+	return NewAsyncClientConn(c.producer, c.queueName)
 }

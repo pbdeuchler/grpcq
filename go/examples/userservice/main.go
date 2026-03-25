@@ -225,8 +225,7 @@ func runAsyncClient(ctx context.Context) {
 	}
 
 	for _, user := range users {
-		// Same method signature as gRPC!
-		_, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
+		err := client.CreateUser(ctx, &userpb.CreateUserRequest{
 			Name:  user.name,
 			Email: user.email,
 		})
@@ -281,7 +280,7 @@ func runDemo(ctx context.Context, sigCh chan os.Signal) {
 	}
 
 	for _, user := range users {
-		_, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
+		err := client.CreateUser(ctx, &userpb.CreateUserRequest{
 			Name:  user.name,
 			Email: user.email,
 		})

@@ -8,7 +8,7 @@ This package provides seamless interoperability between standard gRPC services a
 
 The `grpc` package contains adapters that bridge the gap between:
 - gRPC server implementations ↔ grpcq workers
-- gRPC client interfaces ↔ grpcq publishers
+- gRPC client interfaces ↔ grpcq producers
 
 This enables a "write once, deploy anywhere" pattern for microservices.
 
@@ -40,12 +40,12 @@ func WrapUnaryMethod[TReq proto.Message, TResp proto.Message](
 
 ### Client Adapters
 
-**`AsyncClientConn`**: Implements `grpc.ClientConnInterface` but routes calls through a grpcq publisher.
+**`AsyncClientConn`**: Implements `grpc.ClientConnInterface` but routes calls through a grpcq producer.
 
 **`ClientAdapter`**: Provides a convenient wrapper for creating async client connections.
 
 ```go
-func NewClientAdapter(publisher *core.Publisher, queueName string) *ClientAdapter
+func NewClientAdapter(producer *core.Producer, queueName string) *ClientAdapter
 ```
 
 ## Usage
@@ -132,11 +132,11 @@ resp, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
 ```go
 import grpcadapter "github.com/pbdeuchler/grpcq/go/grpc"
 
-// Create publisher
-publisher := core.NewPublisher(adapter, "my-service")
+// Create producer
+producer := core.NewProducer(adapter, "my-service")
 
 // Create client adapter
-clientAdapter := grpcadapter.NewClientAdapter(publisher, "user-queue")
+clientAdapter := grpcadapter.NewClientAdapter(producer, "user-queue")
 
 // Use the same client interface!
 client := userpb.NewUserServiceClient(clientAdapter.Conn())
@@ -147,7 +147,7 @@ resp, err := client.CreateUser(ctx, &userpb.CreateUserRequest{
     Email: "alice@example.com",
 })
 // Returns immediately (fire-and-forget)
-// resp will be zero value since this is async
+// resp will be zero value since grpc.ClientConnInterface requires a response object
 ```
 
 ## Advanced Usage
@@ -239,7 +239,7 @@ These map to the full gRPC method path: `/package.ServiceName/MethodName`
    - The `Invoke` method intercepts the call
    - Extracts service name and method name from the full method path
    - Marshals the request proto
-   - Publishes to the queue via grpcq publisher
+   - Publishes to the queue via grpcq producer
 
 3. Since it's async:
    - The method returns immediately
@@ -346,8 +346,8 @@ worker := core.NewWorker(adapter, registry, config)
 go worker.Start(ctx)
 
 // Setup client
-publisher := core.NewPublisher(adapter, "test")
-clientAdapter := grpcadapter.NewClientAdapter(publisher, "queue")
+producer := core.NewProducer(adapter, "test")
+clientAdapter := grpcadapter.NewClientAdapter(producer, "queue")
 client := userpb.NewUserServiceClient(clientAdapter.Conn())
 
 // Test async calls
@@ -361,7 +361,7 @@ See the [User Service Example](../examples/userservice/) for a complete working 
 - Synchronous gRPC server
 - Synchronous gRPC client
 - Asynchronous worker
-- Asynchronous publisher
+- Asynchronous producer
 - Multiple modes in one binary
 
 ## Migration Guide
@@ -391,7 +391,8 @@ See the [User Service Example](../examples/userservice/) for a complete working 
    client := userpb.NewUserServiceClient(conn)
 
    // After
-   clientAdapter := grpcadapter.NewClientAdapter(publisher, "queue")
+   producer := core.NewProducer(adapter, "client")
+   clientAdapter := grpcadapter.NewClientAdapter(producer, "queue")
    client := userpb.NewUserServiceClient(clientAdapter.Conn())
    ```
 
@@ -436,11 +437,11 @@ See the [User Service Example](../examples/userservice/) for a complete working 
 - Wraps a gRPC unary method for use with grpcq
 - Returns a function compatible with `core.Handler`
 
-**`NewClientAdapter(publisher, queueName) *ClientAdapter`**
+**`NewClientAdapter(producer, queueName) *ClientAdapter`**
 - Creates a new client adapter
 - Returns adapter that can create gRPC-compatible connections
 
-**`NewAsyncClientConn(publisher, queueName) *AsyncClientConn`**
+**`NewAsyncClientConn(producer, queueName) *AsyncClientConn`**
 - Creates a new async client connection
 - Returns a `grpc.ClientConnInterface` implementation
 

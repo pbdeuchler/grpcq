@@ -24,6 +24,9 @@ go.work.sum
 bin/
 dist/
 
+# Example binaries
+go/examples/userservice/userservice
+
 # IDE
 .vscode/
 .idea/

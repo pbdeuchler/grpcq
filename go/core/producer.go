@@ -49,33 +49,28 @@ func (p *Producer) Send(
 	protoMessage proto.Message,
 	metadata map[string]string,
 ) error {
-	// Validate inputs
 	if err := validateQueueName(queueName); err != nil {
-		return fmt.Errorf("invalid queue name: %w", err)
+		return err
 	}
 	if err := validateTopicAction(topic, action); err != nil {
-		return fmt.Errorf("invalid topic/action: %w", err)
+		return err
 	}
 
-	// Serialize the proto message
 	payload, err := proto.Marshal(protoMessage)
 	if err != nil {
-		return fmt.Errorf("failed to marshal proto message for %s.%s: %w", topic, action, err)
+		return fmt.Errorf("failed to marshal payload for %s.%s: %w", topic, action, err)
 	}
 
-	// Validate message size
 	if len(payload) > MaxMessageSize {
-		return fmt.Errorf("message payload for %s.%s exceeds maximum size of %d bytes (got %d bytes)",
+		return fmt.Errorf("payload for %s.%s exceeds %d bytes (got %d)",
 			topic, action, MaxMessageSize, len(payload))
 	}
 
-	// Clone metadata to prevent external mutations
 	clonedMetadata := make(map[string]string, len(metadata))
 	for k, v := range metadata {
 		clonedMetadata[k] = v
 	}
 
-	// Create the message envelope
 	msg := &pb.Message{
 		Originator:  p.originator,
 		Topic:       topic,
@@ -86,13 +81,7 @@ func (p *Producer) Send(
 		Metadata:    clonedMetadata,
 	}
 
-	// Publish to the queue
-	if err := p.adapter.Publish(ctx, queueName, msg); err != nil {
-		return fmt.Errorf("failed to publish message to queue '%s' for %s.%s: %w",
-			queueName, topic, action, err)
-	}
-
-	return nil
+	return p.adapter.Publish(ctx, queueName, msg)
 }
 
 // SendBatch publishes multiple messages to the specified queue in a single operation.
@@ -105,6 +94,10 @@ func (p *Producer) SendBatch(
 	queueName string,
 	specs []MessageSpec,
 ) error {
+	if len(specs) == 0 {
+		return nil
+	}
+
 	// Validate queue name
 	if err := validateQueueName(queueName); err != nil {
 		return fmt.Errorf("invalid queue name: %w", err)
@@ -113,30 +106,25 @@ func (p *Producer) SendBatch(
 	messages := make([]*pb.Message, len(specs))
 
 	for i, spec := range specs {
-		// Validate topic and action
 		if err := validateTopicAction(spec.Topic, spec.Action); err != nil {
-			return fmt.Errorf("invalid topic/action for message %d: %w", i, err)
+			return fmt.Errorf("message %d: %w", i, err)
 		}
 
-		// Serialize the proto message
 		payload, err := proto.Marshal(spec.ProtoMessage)
 		if err != nil {
 			return fmt.Errorf("failed to marshal message %d (%s.%s): %w", i, spec.Topic, spec.Action, err)
 		}
 
-		// Validate message size
 		if len(payload) > MaxMessageSize {
-			return fmt.Errorf("message %d (%s.%s) exceeds maximum size of %d bytes (got %d bytes)",
+			return fmt.Errorf("message %d (%s.%s) payload exceeds %d bytes (got %d)",
 				i, spec.Topic, spec.Action, MaxMessageSize, len(payload))
 		}
 
-		// Clone metadata to prevent external mutations
 		clonedMetadata := make(map[string]string, len(spec.Metadata))
 		for k, v := range spec.Metadata {
 			clonedMetadata[k] = v
 		}
 
-		// Create the message envelope
 		messages[i] = &pb.Message{
 			Originator:  p.originator,
 			Topic:       spec.Topic,
@@ -148,13 +136,7 @@ func (p *Producer) SendBatch(
 		}
 	}
 
-	// Publish all messages
-	if err := p.adapter.Publish(ctx, queueName, messages...); err != nil {
-		return fmt.Errorf("failed to publish batch of %d messages to queue '%s': %w",
-			len(messages), queueName, err)
-	}
-
-	return nil
+	return p.adapter.Publish(ctx, queueName, messages...)
 }
 
 // MessageSpec specifies a message to be published.

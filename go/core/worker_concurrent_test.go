@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -87,7 +88,7 @@ func (a *infiniteAdapter) Consume(ctx context.Context, queueName string, maxBatc
 			Items: []MessageItem{
 				{
 					Message: &pb.Message{
-						MessageId: string(rune(msgID)),
+						MessageId: strconv.FormatInt(msgID, 10),
 						Topic:     "test",
 						Action:    "action",
 					},
@@ -128,7 +129,7 @@ func TestWorkerPoolConcurrentStart(t *testing.T) {
 	numMessages := 50
 	for i := 0; i < numMessages; i++ {
 		adapter.messages <- &pb.Message{
-			MessageId: string(rune(i)),
+			MessageId: strconv.Itoa(i),
 			Topic:     "test",
 			Action:    "action",
 		}
@@ -253,7 +254,7 @@ func (a *errorAdapter) Consume(ctx context.Context, queueName string, maxBatch i
 		Items: []MessageItem{
 			{
 				Message: &pb.Message{
-					MessageId: string(rune(a.count)),
+					MessageId: strconv.Itoa(a.count),
 					Topic:     "test",
 					Action:    "action",
 				},
@@ -271,7 +272,7 @@ func TestWorkerConcurrentMessageProcessing(t *testing.T) {
 	// Generate messages
 	for i := 0; i < 100; i++ {
 		adapter.messages[i] = &pb.Message{
-			MessageId: string(rune(i)),
+			MessageId: strconv.Itoa(i),
 			Topic:     "test",
 			Action:    "action",
 			Payload:   []byte{byte(i)},

@@ -36,8 +36,8 @@ func RegisterUserServiceConsumer(adapter grpcq.QueueAdapter, srv UserServiceCons
 
 // UserServiceProducer is the client API for UserService service with grpcq.
 type UserServiceProducer interface {
-	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpcq.CallOption) (*CreateUserResponse, error)
-	GetUser(ctx context.Context, in *GetUserRequest, opts ...grpcq.CallOption) (*GetUserResponse, error)
+	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpcq.CallOption) error
+	GetUser(ctx context.Context, in *GetUserRequest, opts ...grpcq.CallOption) error
 }
 
 type userServiceProducer struct {
@@ -51,20 +51,10 @@ func NewUserServiceProducer(adapter grpcq.QueueAdapter, opts ...grpcq.ClientOpti
 	}
 }
 
-func (c *userServiceProducer) CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpcq.CallOption) (*CreateUserResponse, error) {
-	out := new(CreateUserResponse)
-	err := c.cc.Invoke(ctx, "userservice.UserService", "CreateUser", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+func (c *userServiceProducer) CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpcq.CallOption) error {
+	return c.cc.Invoke(ctx, "userservice.UserService", "CreateUser", in, opts...)
 }
 
-func (c *userServiceProducer) GetUser(ctx context.Context, in *GetUserRequest, opts ...grpcq.CallOption) (*GetUserResponse, error) {
-	out := new(GetUserResponse)
-	err := c.cc.Invoke(ctx, "userservice.UserService", "GetUser", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+func (c *userServiceProducer) GetUser(ctx context.Context, in *GetUserRequest, opts ...grpcq.CallOption) error {
+	return c.cc.Invoke(ctx, "userservice.UserService", "GetUser", in, opts...)
 }

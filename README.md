@@ -14,7 +14,7 @@ grpcq lets you use the same service implementation for both synchronous gRPC and
 - **Protocol Buffer code generation** via `protoc-gen-grpcq`
 - **Multiple queue backends** (SQS, Kafka, RabbitMQ via adapters)
 - **Same service code** works for both gRPC and queue modes
-- **Built-in validation**, retry logic, and graceful shutdown
+- **Built-in validation** and graceful shutdown
 - **In-memory adapter** for testing
 
 ## Installation
@@ -61,7 +61,12 @@ grpcServer.Serve(listener)
 **Queue Mode (async):**
 
 ```go
-adapter := sqs.NewAdapter(sqsClient, queueURL)  // or memory.NewAdapter() for testing
+adapter, _ := sqsadapter.NewAdapter(sqsadapter.Config{
+    Client: sqs.NewFromConfig(cfg),
+    QueueURLs: map[string]string{
+        "user-queue": queueURL,
+    },
+})
 server := userpb.RegisterUserServiceConsumer(adapter, &UserService{})
 server.Start(ctx)
 ```
@@ -79,7 +84,9 @@ resp, _ := client.CreateUser(ctx, req)
 
 ```go
 producer := userpb.NewUserServiceProducer(adapter)
-producer.CreateUser(ctx, req)  // Fire-and-forget
+if err := producer.CreateUser(ctx, req); err != nil {
+    // Handle publish error
+}
 ```
 
 ## Queue Adapters
@@ -90,7 +97,12 @@ producer.CreateUser(ctx, req)  // Fire-and-forget
 import sqsadapter "github.com/pbdeuchler/grpcq/go/adapters/sqs"
 
 cfg, _ := config.LoadDefaultConfig(ctx)
-adapter := sqsadapter.NewAdapter(sqs.NewFromConfig(cfg), queueURL)
+adapter, _ := sqsadapter.NewAdapter(sqsadapter.Config{
+    Client: sqs.NewFromConfig(cfg),
+    QueueURLs: map[string]string{
+        "user-queue": queueURL,
+    },
+})
 ```
 
 ### In-Memory (Testing)

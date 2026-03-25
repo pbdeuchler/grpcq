@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -130,8 +131,8 @@ func TestProducerMessageSizeValidation(t *testing.T) {
 		t.Fatal("Expected error for oversized message, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "exceeds maximum size") {
-		t.Fatalf("Expected error about maximum size, got: %v", err)
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Expected error about exceeding size limit, got: %v", err)
 	}
 }
 
@@ -157,7 +158,7 @@ func TestProducerConcurrentSends(t *testing.T) {
 					"test.Service",
 					"TestAction",
 					&pb.Message{Topic: "test"},
-					map[string]string{"goroutine": string(rune(id))},
+					map[string]string{"goroutine": strconv.Itoa(id)},
 				)
 				if err != nil {
 					t.Errorf("Send failed: %v", err)
@@ -345,10 +346,10 @@ func TestProducerSendBatchValidation(t *testing.T) {
 }
 
 func TestProducerEdgeCases(t *testing.T) {
-	adapter := &mockAdapter{}
-	producer := NewProducer(adapter, "test-producer")
-
 	t.Run("nil metadata", func(t *testing.T) {
+		adapter := &mockAdapter{}
+		producer := NewProducer(adapter, "test-producer")
+
 		err := producer.Send(
 			context.Background(),
 			"test-queue",
@@ -363,6 +364,9 @@ func TestProducerEdgeCases(t *testing.T) {
 	})
 
 	t.Run("empty batch", func(t *testing.T) {
+		adapter := &mockAdapter{}
+		producer := NewProducer(adapter, "test-producer")
+
 		err := producer.SendBatch(context.Background(), "test-queue", []MessageSpec{})
 		if err != nil {
 			t.Fatalf("Failed to handle empty batch: %v", err)
@@ -373,6 +377,9 @@ func TestProducerEdgeCases(t *testing.T) {
 	})
 
 	t.Run("special characters in metadata", func(t *testing.T) {
+		adapter := &mockAdapter{}
+		producer := NewProducer(adapter, "test-producer")
+
 		metadata := map[string]string{
 			"special-chars": "!@#$%^&*(){}[]|\\/\"'<>?,.",
 			"unicode":       "你好世界🌍",
