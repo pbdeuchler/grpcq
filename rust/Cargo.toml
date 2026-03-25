@@ -1,0 +1,23 @@
+[package]
+name = "grpcq"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Runtime-independent Rust runtime and adapters for grpcq"
+
+[features]
+default = []
+sqs = ["dep:aws-sdk-sqs", "dep:base64"]
+
+[dependencies]
+aws-sdk-sqs = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+event-listener = "5.4"
+futures = "0.3"
+futures-timer = "3.0"
+prost = "0.13"
+thiserror = "2.0"
+uuid = { version = "1.18", features = ["fast-rng", "v4"] }
+
+[dev-dependencies]
+futures = { version = "0.3", features = ["executor"] }
