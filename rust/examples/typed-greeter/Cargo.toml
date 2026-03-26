@@ -1,0 +1,15 @@
+[package]
+name = "typed-greeter"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+futures = { version = "0.3", features = ["executor"] }
+grpcq = { path = "../.." }
+prost = "0.13"
+
+[build-dependencies]
+grpcq-build = { path = "../../grpcq-build" }

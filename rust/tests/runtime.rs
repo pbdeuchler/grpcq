@@ -12,7 +12,7 @@ use futures::{executor::block_on, future::BoxFuture, FutureExt};
 use grpcq::{
     adapters::memory, CallOptions, CancellationToken, Client, ClientConfig, ConsumeResult, Error,
     Message, MessageItem, Producer, QueueAdapter, Receipt, Registry, Result, Server, ServerConfig,
-    SharedAdapter, SharedReceipt, Worker, WorkerConfig, MAX_MESSAGE_SIZE,
+    ServiceRegistrar, SharedAdapter, SharedReceipt, Worker, WorkerConfig, MAX_MESSAGE_SIZE,
 };
 use prost::Message as ProstMessage;
 
@@ -138,6 +138,51 @@ impl QueueAdapter for StubAdapter {
             })
         }
         .boxed()
+    }
+}
+
+struct RecordingRegistrar {
+    service_name: &'static str,
+    method_name: &'static str,
+    processed_tx: mpsc::Sender<(&'static str, &'static str, String)>,
+}
+
+impl RecordingRegistrar {
+    fn new(
+        service_name: &'static str,
+        method_name: &'static str,
+        processed_tx: mpsc::Sender<(&'static str, &'static str, String)>,
+    ) -> Self {
+        Self {
+            service_name,
+            method_name,
+            processed_tx,
+        }
+    }
+}
+
+impl ServiceRegistrar for RecordingRegistrar {
+    fn register(&self, registry: &Registry) {
+        let processed_tx = self.processed_tx.clone();
+        let service_name = self.service_name;
+        let method_name = self.method_name;
+
+        registry.register(service_name, method_name, move |message| {
+            let processed_tx = processed_tx.clone();
+
+            async move {
+                let request = TestRequest::decode(message.payload.as_slice())
+                    .expect("registered test payload should decode");
+                processed_tx
+                    .send((service_name, method_name, request.name))
+                    .expect("processed message should be recorded");
+                Ok(())
+            }
+        });
+    }
+
+    fn service_name(&self) -> &'static str {
+        self.service_name
     }
 }
 
@@ -447,4 +492,129 @@ fn server_processes_typed_requests() {
 
     let outcome = handle.join().expect("server thread should join");
     assert!(outcome.is_ok(), "server should exit cleanly: {outcome:?}");
+}
+
+#[test]
+fn server_builder_serves_messages_from_registered_services() {
+    let adapter = Arc::new(memory::Adapter::new(16));
+    let shared: SharedAdapter = adapter.clone();
+    let (processed_tx, processed_rx) = mpsc::channel();
+
+    let server = Server::builder(
+        shared.clone(),
+        ServerConfig::default()
+            .with_queue_name("queue")
+            .with_poll_interval(Duration::from_millis(10)),
+    )
+    .add_service(RecordingRegistrar::new(
+        "svc.Service",
+        "CreateUser",
+        processed_tx,
+    ));
+
+    let cancellation = CancellationToken::new();
+    let cancellation_for_thread = cancellation.clone();
+    let handle = thread::spawn(move || block_on(server.serve(cancellation_for_thread)));
+
+    let producer = Producer::new(shared, "origin");
+    block_on(producer.send(
+        "queue",
+        "svc.Service",
+        "CreateUser",
+        &TestRequest {
+            name: "alice".to_string(),
+        },
+        HashMap::new(),
+    ))
+    .expect("send should succeed");
+
+    let processed = processed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("server should process the request");
+    assert_eq!(processed.0, "svc.Service");
+    assert_eq!(processed.1, "CreateUser");
+    assert_eq!(processed.2, "alice");
+
+    cancellation.cancel();
+
+    let outcome = handle.join().expect("server thread should join");
+    assert!(
+        matches!(outcome, Err(Error::Cancelled)),
+        "builder-backed server should stop on cancellation: {outcome:?}"
+    );
+}
+
+#[test]
+fn server_builder_supports_chaining_multiple_services() {
+    let adapter = Arc::new(memory::Adapter::new(16));
+    let shared: SharedAdapter = adapter.clone();
+    let (processed_tx, processed_rx) = mpsc::channel();
+
+    let server = Server::builder(
+        shared.clone(),
+        ServerConfig::default()
+            .with_queue_name("queue")
+            .with_poll_interval(Duration::from_millis(10)),
+    )
+    .add_service(RecordingRegistrar::new(
+        "svc.Users",
+        "CreateUser",
+        processed_tx.clone(),
+    ))
+    .add_service(RecordingRegistrar::new(
+        "svc.Teams",
+        "CreateTeam",
+        processed_tx,
+    ));
+
+    let cancellation = CancellationToken::new();
+    let cancellation_for_thread = cancellation.clone();
+    let handle = thread::spawn(move || block_on(server.serve(cancellation_for_thread)));
+
+    let producer = Producer::new(shared, "origin");
+    block_on(producer.send(
+        "queue",
+        "svc.Users",
+        "CreateUser",
+        &TestRequest {
+            name: "alice".to_string(),
+        },
+        HashMap::new(),
+    ))
+    .expect("user message should succeed");
+    block_on(producer.send(
+        "queue",
+        "svc.Teams",
+        "CreateTeam",
+        &TestRequest {
+            name: "eng".to_string(),
+        },
+        HashMap::new(),
+    ))
+    .expect("team message should succeed");
+
+    let first = processed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("first service should process");
+    let second = processed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second service should process");
+    let mut processed = [first, second];
+    processed.sort_unstable();
+
+    assert_eq!(
+        processed,
+        [
+            ("svc.Teams", "CreateTeam", "eng".to_string()),
+            ("svc.Users", "CreateUser", "alice".to_string()),
+        ]
+    );
+
+    cancellation.cancel();
+
+    let outcome = handle.join().expect("server thread should join");
+    assert!(
+        matches!(outcome, Err(Error::Cancelled)),
+        "builder-backed server should stop on cancellation: {outcome:?}"
+    );
 }

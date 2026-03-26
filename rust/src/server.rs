@@ -17,6 +17,11 @@ pub struct HandlerContext {
     pub message: Message,
 }
 
+pub trait ServiceRegistrar: Send + Sync {
+    fn register(&self, registry: &Registry);
+    fn service_name(&self) -> &'static str;
+}
+
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
     pub queue_name: String,
@@ -64,6 +69,12 @@ pub struct Server {
     started: AtomicBool,
 }
 
+pub struct ServerBuilder {
+    adapter: SharedAdapter,
+    config: ServerConfig,
+    registrars: Vec<Box<dyn ServiceRegistrar>>,
+}
+
 impl fmt::Debug for Server {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Server")
@@ -74,15 +85,15 @@ impl fmt::Debug for Server {
 
 impl Server {
     pub fn new(adapter: SharedAdapter, config: ServerConfig) -> Self {
-        let registry = Registry::new();
-        let worker = Worker::new(
-            adapter,
-            registry.clone(),
-            WorkerConfig::new(config.queue_name)
-                .with_concurrency(config.concurrency)
-                .with_max_batch(config.max_batch)
-                .with_poll_interval(config.poll_interval),
-        );
+        Self::from_registry(adapter, config, Registry::new())
+    }
+
+    pub fn builder(adapter: SharedAdapter, config: ServerConfig) -> ServerBuilder {
+        ServerBuilder::new(adapter, config)
+    }
+
+    fn from_registry(adapter: SharedAdapter, config: ServerConfig, registry: Registry) -> Self {
+        let worker = Worker::new(adapter, registry.clone(), worker_config(&config));
 
         Self {
             registry,
@@ -143,4 +154,42 @@ impl Server {
 
         self.worker.stop().await
     }
+}
+
+impl ServerBuilder {
+    pub fn new(adapter: SharedAdapter, config: ServerConfig) -> Self {
+        Self {
+            adapter,
+            config,
+            registrars: Vec::new(),
+        }
+    }
+
+    pub fn add_service<S>(mut self, service: S) -> Self
+    where
+        S: ServiceRegistrar + 'static,
+    {
+        self.registrars.push(Box::new(service));
+        self
+    }
+
+    pub fn build(self) -> Server {
+        let registry = Registry::new();
+        for registrar in &self.registrars {
+            registrar.register(&registry);
+        }
+
+        Server::from_registry(self.adapter, self.config, registry)
+    }
+
+    pub async fn serve(self, cancellation: CancellationToken) -> Result<()> {
+        self.build().start(cancellation).await
+    }
+}
+
+fn worker_config(config: &ServerConfig) -> WorkerConfig {
+    WorkerConfig::new(config.queue_name.clone())
+        .with_concurrency(config.concurrency)
+        .with_max_batch(config.max_batch)
+        .with_poll_interval(config.poll_interval)
 }

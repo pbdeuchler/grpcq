@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust", "rust/grpcq-build"]
+resolver = "2"

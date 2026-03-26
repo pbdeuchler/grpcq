@@ -1,0 +1,17 @@
+[package]
+name = "grpcq_build_consumer_fixture"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+grpcq = { path = "../../../../" }
+prost = "0.13"
+
+[dev-dependencies]
+futures = { version = "0.3", features = ["executor"] }
+
+[build-dependencies]
+grpcq-build = { path = "../../.." }

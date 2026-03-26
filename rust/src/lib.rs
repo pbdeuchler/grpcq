@@ -1,3 +1,7 @@
+pub use async_trait::async_trait;
+#[cfg(feature = "tonic")]
+pub use tonic;
+
 mod client;
 mod core;
 mod error;
@@ -14,4 +18,4 @@ pub use core::{
 };
 pub use error::{Error, Result};
 pub use proto::Message;
-pub use server::{HandlerContext, Server, ServerConfig};
+pub use server::{HandlerContext, Server, ServerBuilder, ServerConfig, ServiceRegistrar};

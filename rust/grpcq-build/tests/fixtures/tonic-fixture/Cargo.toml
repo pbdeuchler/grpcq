@@ -1,0 +1,17 @@
+[package]
+name = "grpcq_build_tonic_fixture"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+futures = { version = "0.3", features = ["executor"] }
+grpcq = { path = "../../../../", features = ["tonic"] }
+prost = "0.13"
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
+
+[build-dependencies]
+grpcq-build = { path = "../../..", features = ["tonic"] }
+tonic-build = { version = "0.12", default-features = false, features = ["prost", "transport"] }

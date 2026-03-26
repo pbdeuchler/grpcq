@@ -38,6 +38,10 @@ go install github.com/pbdeuchler/grpcq/cmd/protoc-gen-grpcq@latest
 # Cargo.toml
 [dependencies]
 grpcq = { git = "https://github.com/pbdeuchler/grpcq", path = "rust" }
+prost = "0.13"
+
+[build-dependencies]
+grpcq-build = { git = "https://github.com/pbdeuchler/grpcq", path = "rust/grpcq-build" }
 
 # Enable the SQS adapter:
 grpcq = { git = "https://github.com/pbdeuchler/grpcq", path = "rust", features = ["sqs"] }
@@ -218,6 +222,88 @@ worker.start(token).await?;
 ```
 
 Enable the `sqs` feature for AWS SQS support.
+
+### Rust Typed Codegen
+
+`grpcq-build` generates typed consumers and producers from your `.proto` files at build time.
+
+```rust
+// build.rs
+fn main() -> std::io::Result<()> {
+    grpcq_build::compile_protos(&["proto/greeter.proto"], &["proto"])?;
+    Ok(())
+}
+```
+
+```rust
+// src/lib.rs
+pub mod generated {
+    include!(concat!(env!("OUT_DIR"), "/helloworld.rs"));
+}
+```
+
+```rust
+use std::{sync::Arc, time::Duration};
+
+use grpcq::{
+    adapters::memory, CancellationToken, ClientConfig, Server, ServerConfig, SharedAdapter,
+};
+use your_crate::generated::{
+    greeter_consumer::{Greeter, GreeterConsumer},
+    greeter_producer::GreeterProducer,
+    HelloReply, HelloRequest,
+};
+
+struct GreeterService;
+
+#[grpcq::async_trait]
+impl Greeter for GreeterService {
+    async fn say_hello(&self, req: HelloRequest) -> grpcq::Result<HelloReply> {
+        Ok(HelloReply {
+            message: format!("hello {}", req.name),
+        })
+    }
+}
+
+async fn run() -> grpcq::Result<()> {
+    let adapter: SharedAdapter = Arc::new(memory::Adapter::new(16));
+    let token = CancellationToken::new();
+
+    let server = Server::builder(
+        adapter.clone(),
+        ServerConfig::default()
+            .with_queue_name("jobs")
+            .with_poll_interval(Duration::from_millis(10)),
+    )
+    .add_service(GreeterConsumer::new(GreeterService));
+
+    let producer = GreeterProducer::new(
+        adapter,
+        ClientConfig::default()
+            .with_queue_name("jobs")
+            .with_originator("api"),
+    );
+
+    let _server_task = std::thread::spawn(move || futures::executor::block_on(server.serve(token)));
+    producer
+        .say_hello(HelloRequest {
+            name: "Alice".to_string(),
+        })
+        .await?;
+
+    Ok(())
+}
+```
+
+Enable the `tonic` feature when you want queue handlers to use `tonic::Request`, `tonic::Response`, and `tonic::Status` signatures:
+
+```toml
+[dependencies]
+grpcq = { git = "https://github.com/pbdeuchler/grpcq", path = "rust", features = ["tonic"] }
+
+[build-dependencies]
+grpcq-build = { git = "https://github.com/pbdeuchler/grpcq", path = "rust/grpcq-build", features = ["tonic"] }
+```
 
 ## TypeScript
 
