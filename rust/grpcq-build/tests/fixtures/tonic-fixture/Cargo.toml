@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
-[workspace]
-
 [dependencies]
 futures = { version = "0.3", features = ["executor"] }
 grpcq = { path = "../../../../", features = ["tonic"] }
