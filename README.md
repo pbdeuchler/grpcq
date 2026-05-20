@@ -35,17 +35,17 @@ go install github.com/pbdeuchler/grpcq/cmd/protoc-gen-grpcq@latest
 ### Rust
 
 ```toml
-# Cargo.toml
+# The Rust crates currently live in this repository's `rust/` workspace.
+# The examples and tests consume them as path dependencies from a checkout.
 [dependencies]
-grpcq = { git = "https://github.com/pbdeuchler/grpcq", path = "rust" }
+grpcq = { path = "../path/to/grpcq/rust" }
 prost = "0.13"
 
 [build-dependencies]
-grpcq-build = { git = "https://github.com/pbdeuchler/grpcq", path = "rust/grpcq-build" }
-
-# Enable the SQS adapter:
-grpcq = { git = "https://github.com/pbdeuchler/grpcq", path = "rust", features = ["sqs"] }
+grpcq-build = { path = "../path/to/grpcq/rust/grpcq-build" }
 ```
+
+Add `features = ["sqs"]` to `grpcq` for the AWS SQS adapter. Add `features = ["tonic"]` to both `grpcq` and `grpcq-build` when you want tonic-compatible generated consumer traits.
 
 ### TypeScript
 
@@ -196,36 +196,19 @@ type Receipt interface {
 
 ## Rust
 
-The Rust runtime mirrors Go's architecture. It is async-runtime-agnostic (uses `futures` traits, no Tokio dependency).
+The Rust codebase currently has two layers:
 
-```rust
-use grpcq::{Producer, Worker, WorkerConfig, Registry, CancellationToken};
-use grpcq::adapters::memory::MemoryAdapter;
-use std::sync::Arc;
+- `grpcq`: the runtime crate. `Client` and `Server` are the higher-level entry points; `Producer`, `Registry`, `Worker`, and `WorkerPool` are still exposed for lower-level wiring.
+- `grpcq-build`: a build-time crate that wraps `prost-build` and generates typed `{service}_consumer` and `{service}_producer` modules from unary RPC services.
 
-// Produce
-let adapter = Arc::new(MemoryAdapter::new(1000));
-let producer = Producer::new(adapter.clone(), "my-service");
-producer.send("user-queue", "userservice.UserService", "CreateUser", &request, Default::default()).await?;
-
-// Consume
-let registry = Registry::new();
-registry.register("userservice.UserService", "CreateUser", |msg| async move {
-    // handle message
-    Ok(())
-});
-
-let config = WorkerConfig::new("user-queue").with_concurrency(5);
-let worker = Worker::new(adapter, registry, config);
-let token = CancellationToken::new();
-worker.start(token).await?;
-```
-
-Enable the `sqs` feature for AWS SQS support.
+The core runtime is futures-based and does not require Tokio unless you opt into the `tonic` feature.
 
 ### Rust Typed Codegen
 
-`grpcq-build` generates typed consumers and producers from your `.proto` files at build time.
+`grpcq-build` is the main typed Rust story in the repo today. It generates:
+
+- a `{service}_consumer` module with an async trait and a `*Consumer` wrapper that implements `grpcq::ServiceRegistrar`
+- a `{service}_producer` module with typed fire-and-forget producer methods
 
 ```rust
 // build.rs
@@ -238,17 +221,23 @@ fn main() -> std::io::Result<()> {
 ```rust
 // src/lib.rs
 pub mod generated {
-    include!(concat!(env!("OUT_DIR"), "/helloworld.rs"));
+    include!(concat!(env!("OUT_DIR"), "/examples.greeter.rs"));
 }
 ```
 
 ```rust
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, thread, time::Duration};
 
+use futures::executor::block_on;
 use grpcq::{
     adapters::memory, CancellationToken, ClientConfig, Server, ServerConfig, SharedAdapter,
 };
-use your_crate::generated::{
+
+pub mod generated {
+    include!(concat!(env!("OUT_DIR"), "/examples.greeter.rs"));
+}
+
+use generated::{
     greeter_consumer::{Greeter, GreeterConsumer},
     greeter_producer::GreeterProducer,
     HelloReply, HelloRequest,
@@ -265,44 +254,71 @@ impl Greeter for GreeterService {
     }
 }
 
-async fn run() -> grpcq::Result<()> {
+fn main() -> grpcq::Result<()> {
     let adapter: SharedAdapter = Arc::new(memory::Adapter::new(16));
-    let token = CancellationToken::new();
+    let cancellation = CancellationToken::new();
+    let server_token = cancellation.clone();
 
     let server = Server::builder(
         adapter.clone(),
         ServerConfig::default()
-            .with_queue_name("jobs")
+            .with_queue_name("examples")
             .with_poll_interval(Duration::from_millis(10)),
     )
     .add_service(GreeterConsumer::new(GreeterService));
 
+    let handle = thread::spawn(move || block_on(server.serve(server_token)));
+
     let producer = GreeterProducer::new(
         adapter,
         ClientConfig::default()
-            .with_queue_name("jobs")
-            .with_originator("api"),
+            .with_queue_name("examples")
+            .with_originator("typed-greeter"),
     );
 
-    let _server_task = std::thread::spawn(move || futures::executor::block_on(server.serve(token)));
-    producer
-        .say_hello(HelloRequest {
-            name: "Alice".to_string(),
-        })
-        .await?;
+    block_on(producer.say_hello(HelloRequest {
+        name: "world".to_string(),
+    }))?;
 
+    cancellation.cancel();
+    let _ = handle.join();
     Ok(())
 }
 ```
 
-Enable the `tonic` feature when you want queue handlers to use `tonic::Request`, `tonic::Response`, and `tonic::Status` signatures:
+This is the same pattern used by `rust/examples/typed-greeter` and by the `grpcq-build` integration fixtures when they are run separately.
+
+### What The Generated API Does
+
+- Generated producer methods are fire-and-forget and return `grpcq::Result<()>`.
+- Generated consumer traits preserve the proto response type so a service implementation can match a gRPC-style signature, but queue delivery does not send that response anywhere.
+- `grpcq-build` only supports unary RPC methods today. Streaming RPCs are rejected at codegen time.
+
+### Lower-Level Runtime API
+
+If you do not want code generation, the lower-level runtime is still available:
+
+- `Client::invoke` and `CallOptions` for typed request publishing against explicit service and method names
+- `Producer::send` and `Producer::send_batch` for manual envelope publishing via `MessageSpec`
+- `Server::register_method` for decoding a typed request and handling it with access to `HandlerContext`
+- `Registry`, `Worker`, and `WorkerPool` for manual routing and worker orchestration
+
+The in-memory adapter is `grpcq::adapters::memory::Adapter`. The AWS SQS adapter lives behind the `sqs` feature as `grpcq::adapters::sqs::Adapter`.
+
+### tonic Compatibility
+
+Enable the `tonic` feature on both `grpcq` and `grpcq-build` when you want the generated consumer traits to use `tonic::Request<T>`, `tonic::Response<T>`, and `tonic::Status`. That path is tested in `rust/grpcq-build/tests/fixtures/tonic-fixture`, where one service type is registered with both grpcq and tonic-generated server code.
+
+If you also want to run a real tonic server in your application, add `tonic` and `tonic-build` alongside the grpcq crates:
 
 ```toml
 [dependencies]
-grpcq = { git = "https://github.com/pbdeuchler/grpcq", path = "rust", features = ["tonic"] }
+grpcq = { path = "../path/to/grpcq/rust", features = ["tonic"] }
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
 
 [build-dependencies]
-grpcq-build = { git = "https://github.com/pbdeuchler/grpcq", path = "rust/grpcq-build", features = ["tonic"] }
+grpcq-build = { path = "../path/to/grpcq/rust/grpcq-build", features = ["tonic"] }
+tonic-build = { version = "0.12", default-features = false, features = ["prost", "transport"] }
 ```
 
 ## TypeScript
@@ -366,7 +382,7 @@ grpcq/
 │   ├── grpcq/              # Server/Client runtime for generated code
 │   ├── adapters/           # memory, SQS
 │   └── examples/           # userservice demo
-├── rust/                   # Rust runtime + adapters
+├── rust/                   # Rust runtime, adapters, codegen crate, examples
 └── typescript/             # TypeScript runtime + adapters
 ```
 
