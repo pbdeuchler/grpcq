@@ -34,4 +34,5 @@ tonic = { version = "0.12", optional = true, default-features = false, features 
 uuid = { version = "1.18", features = ["fast-rng", "v4"] }
 
 [dev-dependencies]
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
 futures = { version = "0.3", features = ["executor"] }

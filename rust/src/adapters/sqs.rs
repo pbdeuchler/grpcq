@@ -1,9 +1,6 @@
 // pattern: Imperative Shell (adapter I/O) + Functional Core (encode/decode)
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use aws_sdk_sqs::{
     types::{MessageAttributeValue, SendMessageBatchRequestEntry},
@@ -128,7 +125,6 @@ impl QueueAdapter for Adapter {
                     let message = decode_message_body(sqs_msg.body().unwrap_or(""))?;
 
                     let receipt: SharedReceipt = Arc::new(SqsReceipt {
-                        state: Mutex::new(ReceiptState::Pending),
                         client: self.client.clone(),
                         queue_url: queue_url.to_string(),
                         receipt_handle: sqs_msg.receipt_handle().unwrap_or("").to_string(),
@@ -185,14 +181,7 @@ fn build_batch_entry(msg: &Message) -> Result<SendMessageBatchRequestEntry> {
 
 // -- Receipt --
 
-enum ReceiptState {
-    Pending,
-    Acked,
-    Nacked,
-}
-
 struct SqsReceipt {
-    state: Mutex<ReceiptState>,
     client: SqsClient,
     queue_url: String,
     receipt_handle: String,
@@ -201,15 +190,6 @@ struct SqsReceipt {
 impl Receipt for SqsReceipt {
     fn ack(&self) -> BoxFuture<'_, Result<()>> {
         async move {
-            {
-                let mut state = self.state.lock().expect("sqs receipt lock poisoned");
-                match *state {
-                    ReceiptState::Pending => *state = ReceiptState::Acked,
-                    ReceiptState::Acked => return Err(Error::AlreadyAcknowledged),
-                    ReceiptState::Nacked => return Err(Error::AlreadyNacked),
-                }
-            }
-
             self.client
                 .delete_message()
                 .queue_url(&self.queue_url)
@@ -225,15 +205,6 @@ impl Receipt for SqsReceipt {
 
     fn nack(&self) -> BoxFuture<'_, Result<()>> {
         async move {
-            {
-                let mut state = self.state.lock().expect("sqs receipt lock poisoned");
-                match *state {
-                    ReceiptState::Pending => *state = ReceiptState::Nacked,
-                    ReceiptState::Acked => return Err(Error::AlreadyAcknowledged),
-                    ReceiptState::Nacked => return Err(Error::AlreadyNacked),
-                }
-            }
-
             self.client
                 .change_message_visibility()
                 .queue_url(&self.queue_url)
@@ -252,6 +223,67 @@ impl Receipt for SqsReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_receipt_operations_remain_retryable() {
+        use aws_sdk_sqs::config::{
+            retry::RetryConfig, BehaviorVersion, Credentials, IdentityCache, Region,
+        };
+        use aws_smithy_runtime_api::client::{
+            http::{http_client_fn, HttpConnector, HttpConnectorFuture, SharedHttpConnector},
+            orchestrator::{HttpRequest, HttpResponse},
+        };
+        use futures::executor::block_on;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone, Debug)]
+        struct Connector(Arc<AtomicUsize>);
+        impl HttpConnector for Connector {
+            fn call(&self, _: HttpRequest) -> HttpConnectorFuture {
+                let call = self.0.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = if call % 2 == 0 {
+                    (
+                        400_u16,
+                        r#"{"__type":"InvalidParameterValue","message":"test failure"}"#,
+                    )
+                } else {
+                    (200_u16, "{}")
+                };
+                HttpConnectorFuture::new(async move {
+                    Ok(HttpResponse::new(status.try_into().unwrap(), body.into()))
+                })
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let connector = Connector(calls.clone());
+        let client = SqsClient::from_conf(
+            aws_sdk_sqs::Config::builder()
+                .behavior_version(BehaviorVersion::latest())
+                .region(Region::new("us-east-1"))
+                .credentials_provider(Credentials::new("test", "test", None, None, "test"))
+                .http_client(http_client_fn(move |_, _| {
+                    SharedHttpConnector::new(connector.clone())
+                }))
+                .retry_config(RetryConfig::disabled())
+                .identity_cache(IdentityCache::no_cache())
+                .timeout_config(aws_sdk_sqs::config::timeout::TimeoutConfig::disabled())
+                .stalled_stream_protection(
+                    aws_sdk_sqs::config::StalledStreamProtectionConfig::disabled(),
+                )
+                .build(),
+        );
+        for ack in [true, false] {
+            let receipt = SqsReceipt {
+                client: client.clone(),
+                queue_url: "https://sqs.us-east-1.amazonaws.com/123456789012/test".into(),
+                receipt_handle: "receipt".into(),
+            };
+            let settle = || if ack { receipt.ack() } else { receipt.nack() };
+            assert!(matches!(block_on(settle()), Err(Error::Other(_))));
+            block_on(settle()).expect("failed operation must remain retryable");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
 
     #[test]
     fn encode_decode_round_trip() {

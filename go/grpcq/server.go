@@ -5,6 +5,7 @@ package grpcq
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/pbdeuchler/grpcq/go/core"
 	pb "github.com/pbdeuchler/grpcq/go/proto"
@@ -17,12 +18,9 @@ type QueueAdapter = core.QueueAdapter
 
 // Server represents a grpcq server that processes messages from a queue.
 type Server struct {
-	adapter  QueueAdapter
 	registry *core.Registry
-	config   *ServerConfig
 	worker   *core.Worker
-	ctx      context.Context
-	cancel   context.CancelFunc
+	started  atomic.Bool
 }
 
 // ServerConfig contains configuration for a grpcq server.
@@ -84,10 +82,15 @@ func NewServer(adapter QueueAdapter, opts ...ServerOption) *Server {
 		opt(config)
 	}
 
+	registry := core.NewRegistry()
 	return &Server{
-		adapter:  adapter,
-		registry: core.NewRegistry(),
-		config:   config,
+		registry: registry,
+		worker: core.NewWorker(adapter, registry, core.WorkerConfig{
+			QueueName:      config.QueueName,
+			Concurrency:    config.Concurrency,
+			MaxBatch:       config.MaxBatch,
+			PollIntervalMs: config.PollIntervalMs,
+		}),
 	}
 }
 
@@ -110,16 +113,8 @@ func (s *Server) RegisterMethod(
 		}
 
 		// Call handler
-		resp, err := handler(ctx, req)
-		if err != nil {
-			return err
-		}
-
-		// For now, we don't send responses back (fire-and-forget)
-		// In the future, we can publish responses to a reply queue
-		_ = resp
-
-		return nil
+		_, err := handler(ctx, req)
+		return err
 	}
 
 	s.registry.Register(serviceName, methodName, wrappedHandler)
@@ -128,31 +123,16 @@ func (s *Server) RegisterMethod(
 // Start starts the server and begins processing messages.
 // This blocks until the context is cancelled, Stop is called, or an error occurs.
 func (s *Server) Start(ctx context.Context) error {
-	// Create a child context that we can cancel independently
-	s.ctx, s.cancel = context.WithCancel(ctx)
-
-	workerConfig := core.WorkerConfig{
-		QueueName:      s.config.QueueName,
-		Concurrency:    s.config.Concurrency,
-		MaxBatch:       s.config.MaxBatch,
-		PollIntervalMs: s.config.PollIntervalMs,
-	}
-
-	s.worker = core.NewWorker(s.adapter, s.registry, workerConfig)
-	return s.worker.Start(s.ctx)
+	s.started.Store(true)
+	return s.worker.Start(ctx)
 }
 
 // Stop gracefully stops the server.
-// It cancels the server context and waits for the worker to complete.
+// It stops intake and waits for received work and receipt operations to finish.
 func (s *Server) Stop() error {
-	if s.cancel == nil {
+	if !s.started.Load() {
 		return fmt.Errorf("server not started")
 	}
 
-	// Cancel the context to signal shutdown
-	s.cancel()
-
-	// The worker will handle graceful shutdown internally
-	// and return from Start() when all in-flight messages complete
-	return nil
+	return s.worker.Stop(context.Background())
 }

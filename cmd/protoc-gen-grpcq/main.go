@@ -7,36 +7,39 @@
 package main
 
 import (
-	"flag"
+	"fmt"
 
 	"google.golang.org/protobuf/compiler/protogen"
-)
-
-var (
-	requireUnimplemented = flag.Bool("require_unimplemented_servers", true, "set to false to match legacy behavior")
+	"google.golang.org/protobuf/types/pluginpb"
 )
 
 func main() {
-	var flags flag.FlagSet
-	flags.BoolVar(requireUnimplemented, "require_unimplemented_servers", true,
-		"set to false to match legacy behavior")
-
-	protogen.Options{
-		ParamFunc: flags.Set,
-	}.Run(func(gen *protogen.Plugin) error {
-		for _, f := range gen.Files {
-			if !f.Generate {
-				continue
-			}
-			generateFile(gen, f)
-		}
-		return nil
-	})
+	protogen.Options{}.Run(generate)
 }
 
-func generateFile(gen *protogen.Plugin, file *protogen.File) {
+func generate(gen *protogen.Plugin) error {
+	gen.SupportedFeatures = uint64(pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL)
+	for _, f := range gen.Files {
+		if !f.Generate {
+			continue
+		}
+		if err := generateFile(gen, f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func generateFile(gen *protogen.Plugin, file *protogen.File) error {
+	for _, service := range file.Services {
+		for _, method := range service.Methods {
+			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
+				return fmt.Errorf("grpcq only supports unary RPC methods: %s/%s is streaming", service.Desc.FullName(), method.Desc.Name())
+			}
+		}
+	}
 	if len(file.Services) == 0 {
-		return
+		return nil
 	}
 
 	filename := file.GeneratedFilenamePrefix + "_grpcq.pb.go"
@@ -44,6 +47,7 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 
 	generateFileHeader(g, file)
 	generateFileContent(g, file)
+	return nil
 }
 
 func generateFileHeader(g *protogen.GeneratedFile, file *protogen.File) {

@@ -777,6 +777,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-sdk-sqs",
+ "aws-smithy-runtime-api",
  "base64",
  "event-listener",
  "futures",
@@ -796,6 +797,7 @@ dependencies = [
  "prost-build",
  "quote",
  "syn",
+ "tonic-build",
 ]
 
 [[package]]
@@ -817,7 +819,6 @@ dependencies = [
  "grpcq-build",
  "prost",
  "tonic",
- "tonic-build",
 ]
 
 [[package]]

@@ -7,7 +7,7 @@ description = "Build-time code generation support for grpcq Rust services"
 
 [features]
 default = []
-tonic = []
+tonic = ["dep:tonic-build"]
 
 [dependencies]
 heck = "0.5"
@@ -15,3 +15,4 @@ proc-macro2 = "1.0"
 prost-build = "0.13"
 quote = "1.0"
 syn = "2.0"
+tonic-build = { version = "0.12", optional = true, default-features = false, features = ["prost"] }

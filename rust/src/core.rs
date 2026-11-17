@@ -389,87 +389,70 @@ impl Worker {
 
     async fn run(&self, cancellation: CancellationToken) -> Result<()> {
         let mut in_flight = FuturesUnordered::new();
-
-        let outcome = loop {
-            while in_flight.len() >= self.config.concurrency {
-                match self
-                    .await_with_signals(&cancellation, in_flight.next())
-                    .await?
-                {
-                    Some(_) => {}
-                    None => break,
-                }
-            }
-
-            if self.stop.is_cancelled() {
-                break Ok(());
-            }
-
-            if cancellation.is_cancelled() {
-                break Err(Error::Cancelled);
-            }
-
-            let consume_result = match self
-                .await_with_signals(
-                    &cancellation,
-                    self.adapter
-                        .consume(&self.config.queue_name, self.config.max_batch),
-                )
-                .await?
-            {
-                Some(result) => result,
-                None => break Ok(()),
-            };
-
-            let consume_result = match consume_result {
-                Ok(result) => result,
-                Err(err) => break Err(err),
-            };
-
-            if consume_result.items.is_empty() {
-                let should_continue = if in_flight.is_empty() {
-                    self.wait_for_next_poll(&cancellation).await?
-                } else {
-                    self.wait_for_inflight_or_poll(&cancellation, &mut in_flight)
-                        .await?
-                };
-
-                if !should_continue {
-                    break Ok(());
-                }
-                continue;
-            }
-
-            for item in consume_result.items {
+        let mut outcome = async {
+            loop {
                 while in_flight.len() >= self.config.concurrency {
-                    match self
+                    let Some(Some(result)) = self
                         .await_with_signals(&cancellation, in_flight.next())
                         .await?
+                    else {
+                        return Ok(());
+                    };
+                    result?;
+                }
+
+                let Some(result) = self
+                    .await_with_work(
+                        &cancellation,
+                        &mut in_flight,
+                        self.adapter
+                            .consume(&self.config.queue_name, self.config.max_batch),
+                    )
+                    .await?
+                else {
+                    return Ok(());
+                };
+                let result = result?;
+                if result.items.is_empty() {
+                    if self
+                        .await_with_work(
+                            &cancellation,
+                            &mut in_flight,
+                            Delay::new(self.config.poll_interval),
+                        )
+                        .await?
+                        .is_none()
                     {
-                        Some(_) => {}
-                        None => break,
+                        return Ok(());
                     }
+                    continue;
                 }
 
-                if self.stop.is_cancelled() {
-                    break;
-                }
-
-                if cancellation.is_cancelled() {
-                    break;
-                }
-
-                let registry = self.registry.clone();
-                in_flight.push(
-                    async move {
-                        process_message(registry, item).await;
+                // Every received message belongs to this worker, including during shutdown.
+                let mut batch_error = None;
+                for item in result.items {
+                    while in_flight.len() >= self.config.concurrency {
+                        if let Some(Err(error)) = in_flight.next().await {
+                            batch_error.get_or_insert(error);
+                        }
                     }
-                    .boxed(),
-                );
+                    let registry = self.registry.clone();
+                    in_flight.push(process_message(registry, item).boxed());
+                }
+                if let Some(error) = batch_error {
+                    return Err(error);
+                }
             }
-        };
+        }
+        .await;
 
-        while in_flight.next().await.is_some() {}
+        while let Some(result) = in_flight.next().await {
+            if let Err(error) = result {
+                if outcome.is_ok() || matches!(outcome, Err(Error::Cancelled)) {
+                    outcome = Err(error);
+                }
+            }
+        }
         outcome
     }
 
@@ -484,9 +467,7 @@ impl Worker {
         let stop = self.stop.cancelled().fuse();
         let cancelled = cancellation.cancelled().fuse();
         let future = future.fuse();
-
         pin_mut!(stop, cancelled, future);
-
         select_biased! {
             _ = stop => Ok(None),
             _ = cancelled => Err(Error::Cancelled),
@@ -494,45 +475,40 @@ impl Worker {
         }
     }
 
-    async fn wait_for_next_poll(&self, cancellation: &CancellationToken) -> Result<bool> {
-        if self.config.poll_interval.is_zero() {
-            return Ok(true);
-        }
-
-        Ok(self
-            .await_with_signals(cancellation, Delay::new(self.config.poll_interval))
-            .await?
-            .is_some())
-    }
-
-    async fn wait_for_inflight_or_poll(
+    // Drive handler futures while polling the adapter or waiting between polls.
+    async fn await_with_work<T, F>(
         &self,
         cancellation: &CancellationToken,
-        in_flight: &mut FuturesUnordered<BoxFuture<'static, ()>>,
-    ) -> Result<bool> {
-        if in_flight.is_empty() {
-            return self.wait_for_next_poll(cancellation).await;
-        }
-
-        if self.config.poll_interval.is_zero() {
-            return Ok(self
-                .await_with_signals(cancellation, in_flight.next())
-                .await?
-                .is_some());
-        }
-
-        let stop = self.stop.cancelled().fuse();
-        let cancelled = cancellation.cancelled().fuse();
-        let next = in_flight.next().fuse();
-        let delay = Delay::new(self.config.poll_interval).fuse();
-
-        pin_mut!(stop, cancelled, next, delay);
-
-        select_biased! {
-            _ = stop => Ok(false),
-            _ = cancelled => Err(Error::Cancelled),
-            _ = next => Ok(true),
-            _ = delay => Ok(true),
+        in_flight: &mut FuturesUnordered<BoxFuture<'static, Result<()>>>,
+        future: F,
+    ) -> Result<Option<T>>
+    where
+        F: Future<Output = T>,
+    {
+        let future = future.fuse();
+        pin_mut!(future);
+        loop {
+            let next = async {
+                if in_flight.is_empty() {
+                    futures::future::pending().await
+                } else {
+                    in_flight.next().await
+                }
+            }
+            .fuse();
+            let stop = self.stop.cancelled().fuse();
+            let cancelled = cancellation.cancelled().fuse();
+            pin_mut!(next, stop, cancelled);
+            select_biased! {
+                _ = stop => return Ok(None),
+                _ = cancelled => return Err(Error::Cancelled),
+                result = next => {
+                    if let Some(result) = result {
+                        result?;
+                    }
+                },
+                value = future => return Ok(Some(value)),
+            }
         }
     }
 }
@@ -591,7 +567,7 @@ impl WorkerPool {
             tasks.push(async move { worker.start(cancellation).await }.boxed());
         }
 
-        let outcome = loop {
+        let mut outcome = loop {
             let stop = self.stop_requested.cancelled().fuse();
             let cancelled = cancellation.cancelled().fuse();
             let next = tasks.next().fuse();
@@ -600,11 +576,11 @@ impl WorkerPool {
 
             select_biased! {
                 _ = stop => {
-                    self.stop_all().await;
+                    self.request_stop_all();
                     break Ok(());
                 }
                 _ = cancelled => {
-                    self.stop_all().await;
+                    self.request_stop_all();
                     break Err(Error::Cancelled);
                 }
                 task = next => {
@@ -615,7 +591,7 @@ impl WorkerPool {
                             }
                         }
                         Some(Err(err)) => {
-                            self.stop_all().await;
+                            self.request_stop_all();
                             break Err(err);
                         }
                         None => break Ok(()),
@@ -624,7 +600,13 @@ impl WorkerPool {
             }
         };
 
-        while tasks.next().await.is_some() {}
+        while let Some(result) = tasks.next().await {
+            if let Err(error) = result {
+                if outcome.is_ok() || matches!(outcome, Err(Error::Cancelled)) {
+                    outcome = Err(error);
+                }
+            }
+        }
 
         self.state
             .store(WorkerState::Stopped as u8, Ordering::SeqCst);
@@ -634,7 +616,7 @@ impl WorkerPool {
 
     pub async fn stop(&self) -> Result<()> {
         self.stop_requested.cancel();
-        self.stop_all().await;
+        self.request_stop_all();
 
         if self.state.load(Ordering::SeqCst) == WorkerState::Idle as u8 {
             return Ok(());
@@ -644,20 +626,37 @@ impl WorkerPool {
         Ok(())
     }
 
-    async fn stop_all(&self) {
+    fn request_stop_all(&self) {
         for worker in &self.workers {
-            let _ = worker.stop().await;
+            worker.stop.cancel();
         }
     }
 }
 
-async fn process_message(registry: Registry, item: MessageItem) {
-    if registry.handle(item.message).await.is_err() {
-        let _ = item.receipt.nack().await;
-        return;
-    }
-
-    let _ = item.receipt.ack().await;
+async fn process_message(registry: Registry, item: MessageItem) -> Result<()> {
+    let message_id = item.message.message_id.clone();
+    let topic = item.message.topic.clone();
+    let action = item.message.action.clone();
+    let (operation, result) = match registry.handle(item.message).await {
+        Ok(()) => ("ack", item.receipt.ack().await),
+        Err(handler) => {
+            let source = match item.receipt.nack().await {
+                Ok(()) => handler,
+                Err(source) => Error::NackFailed {
+                    handler: Box::new(handler),
+                    source: Box::new(source),
+                },
+            };
+            ("handle", Err(source))
+        }
+    };
+    result.map_err(|source| Error::Delivery {
+        operation,
+        message_id,
+        topic,
+        action,
+        source: Box::new(source),
+    })
 }
 
 fn timestamp_ms() -> i64 {

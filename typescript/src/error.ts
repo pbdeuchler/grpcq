@@ -1,5 +1,7 @@
 // pattern: Functional Core
 
+import type { Message } from "./message.js";
+
 export type GrpcqErrorCode =
   | "EMPTY_QUEUE_NAME"
   | "QUEUE_NAME_WHITESPACE"
@@ -12,6 +14,7 @@ export type GrpcqErrorCode =
   | "UNKNOWN_TOPIC"
   | "UNKNOWN_ACTION"
   | "REQUEST_DECODE"
+  | "MESSAGE_PROCESSING"
   | "ALREADY_ACKNOWLEDGED"
   | "ALREADY_NACKED"
   | "QUEUE_FULL"
@@ -145,6 +148,18 @@ export class GrpcqError extends Error {
 
   static cancelled(): GrpcqError {
     return new GrpcqError("CANCELLED", "operation cancelled");
+  }
+
+  static messageProcessing(
+    message: Message,
+    operation: "handle" | "ack",
+    cause: unknown,
+  ): GrpcqError {
+    return new GrpcqError(
+      "MESSAGE_PROCESSING",
+      `failed to ${operation} message ${message.messageId} (${message.topic}/${message.action}): ${cause}`,
+      cause,
+    );
   }
 
   static other(message: string, cause?: unknown): GrpcqError {

@@ -24,7 +24,10 @@ export interface SqsAdapterConfig {
 // Minimal SQS client interface — matches @aws-sdk/client-sqs shapes
 // without requiring the dependency at compile time.
 export interface SqsClient {
-  send(command: unknown): Promise<unknown>;
+  send(
+    command: unknown,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<unknown>;
 }
 
 // Re-usable command constructors. Users pass an actual @aws-sdk/client-sqs
@@ -156,6 +159,7 @@ export class SqsAdapter implements QueueAdapter {
   async consume(
     queueName: string,
     maxBatch: number,
+    signal?: AbortSignal,
   ): Promise<ConsumeResult> {
     const queueUrl = this.resolveUrl(queueName);
     const clamped = Math.min(Math.max(maxBatch, 1), MAX_BATCH_SIZE);
@@ -167,6 +171,7 @@ export class SqsAdapter implements QueueAdapter {
         WaitTimeSeconds: LONG_POLL_SECONDS,
         MessageAttributeNames: ["All"],
       }),
+      { abortSignal: signal },
     )) as SqsReceiveResult;
 
     const items: MessageItem[] = (output.Messages ?? []).map((sqsMsg) => {
@@ -217,14 +222,8 @@ export class SqsAdapter implements QueueAdapter {
   }
 
   private createReceipt(queueUrl: string, receiptHandle: string): Receipt {
-    let state: "pending" | "acked" | "nacked" = "pending";
-
     return {
       ack: async () => {
-        if (state === "acked") throw GrpcqError.alreadyAcknowledged();
-        if (state === "nacked") throw GrpcqError.alreadyNacked();
-        state = "acked";
-
         try {
           await this.client.send(
             new this.DeleteMessageCommand({
@@ -240,10 +239,6 @@ export class SqsAdapter implements QueueAdapter {
         }
       },
       nack: async () => {
-        if (state === "acked") throw GrpcqError.alreadyAcknowledged();
-        if (state === "nacked") throw GrpcqError.alreadyNacked();
-        state = "nacked";
-
         try {
           await this.client.send(
             new this.ChangeMessageVisibilityCommand({

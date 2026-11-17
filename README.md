@@ -2,7 +2,7 @@
 
 grpcq turns gRPC service definitions into async, queue-driven architectures. You define your service with Protocol Buffers, implement it once, and deploy it as either a traditional gRPC server or an async queue consumer -- same business logic, no code changes.
 
-A protoc plugin (`protoc-gen-grpcq`) generates typed producer and consumer stubs from your `.proto` files. Messages are serialized into a language-agnostic protobuf envelope and routed through any queue backend that implements the `QueueAdapter` interface. The runtime handles concurrent message processing, batching, graceful shutdown, and dead-letter semantics (ack/nack).
+A protoc plugin (`protoc-gen-grpcq`) generates typed producer and consumer stubs from your `.proto` files. Messages are serialized into a language-agnostic protobuf envelope and routed through any queue backend that implements the `QueueAdapter` interface. The runtime handles concurrent message processing, batching, graceful shutdown, and acknowledgement.
 
 Runtimes exist for **Go**, **Rust**, and **TypeScript**. The wire format (a `grpcq.Message` proto) is shared across all three, so a Go producer can publish to a queue consumed by a Rust worker.
 
@@ -22,6 +22,8 @@ Runtimes exist for **Go**, **Rust**, and **TypeScript**. The wire format (a `grp
 Each gRPC method becomes a queue action. The generated `Producer` serializes the request proto into a `grpcq.Message` envelope (originator, topic, action, payload, metadata) and publishes it to a queue. On the other side, a `Worker` consumes messages, looks up the handler by topic+action in a `Registry`, deserializes the payload, and calls your service method.
 
 Responses are not routed back -- this is a fire-and-forget model suited for commands, events, and async task dispatch.
+
+A successful producer call confirms queue acceptance. Handler execution and acknowledgement happen later; their failures are handled by the consumer.
 
 ## Installation
 
@@ -45,7 +47,7 @@ prost = "0.13"
 grpcq-build = { path = "../path/to/grpcq/rust/grpcq-build" }
 ```
 
-Add `features = ["sqs"]` to `grpcq` for the AWS SQS adapter. Add `features = ["tonic"]` to both `grpcq` and `grpcq-build` when you want tonic-compatible generated consumer traits.
+Add `features = ["sqs"]` to `grpcq` for the AWS SQS adapter. Add `features = ["tonic"]` to both `grpcq` and `grpcq-build` to generate a tonic server and queue consumer that share one service trait.
 
 ### TypeScript
 
@@ -178,10 +180,10 @@ SQS messages are base64-encoded protobuf. The adapter handles batching (up to 10
 ```go
 import "github.com/pbdeuchler/grpcq/go/adapters/memory"
 
-adapter := memory.NewAdapter(1000) // channel buffer size per queue
+adapter := memory.NewAdapter(1000) // unacknowledged message capacity per queue
 ```
 
-Channel-backed, suitable for tests and local development. Supports `QueueDepth()` and `Clear()` for test assertions.
+Suitable for tests and local development. Capacity includes queued and in-flight messages until acknowledgement, so a failed message always has room to return to its queue. `QueueDepth()` counts available messages. `Clear()` discards available messages while preserving outstanding receipts and their capacity reservations. Rust and TypeScript memory adapters use the same rules.
 
 ### Custom
 
@@ -307,9 +309,9 @@ The in-memory adapter is `grpcq::adapters::memory::Adapter`. The AWS SQS adapter
 
 ### tonic Compatibility
 
-Enable the `tonic` feature on both `grpcq` and `grpcq-build` when you want the generated consumer traits to use `tonic::Request<T>`, `tonic::Response<T>`, and `tonic::Status`. That path is tested in `rust/grpcq-build/tests/fixtures/tonic-fixture`, where one service type is registered with both grpcq and tonic-generated server code.
+Enable the `tonic` feature on both `grpcq` and `grpcq-build` to generate tonic's `{service}_server` module alongside the queue producer and consumer. Implement the tonic server trait once: the consumer re-exports that same trait and accepts the same implementation. The build script still makes just one `grpcq_build::compile_protos` call.
 
-If you also want to run a real tonic server in your application, add `tonic` and `tonic-build` alongside the grpcq crates:
+Generated tonic code also requires a direct `tonic` dependency:
 
 ```toml
 [dependencies]
@@ -318,8 +320,11 @@ tonic = { version = "0.12", default-features = false, features = ["codegen", "pr
 
 [build-dependencies]
 grpcq-build = { path = "../path/to/grpcq/rust/grpcq-build", features = ["tonic"] }
-tonic-build = { version = "0.12", default-features = false, features = ["prost", "transport"] }
 ```
+
+For example, one `Arc<GreeterService>` can be passed to both `greeter_server::GreeterServer::from_arc` and `greeter_consumer::GreeterConsumer::from_arc`. The integration fixture in `rust/grpcq-build/tests/fixtures/tonic-fixture` exercises both paths, including tonic's codecs and generated server routing.
+
+Applications that previously implemented both the grpcq and tonic traits should keep only the tonic implementation and remove the separate `tonic_build` invocation. Queue producer methods still return only queue acceptance; they do not return the service response.
 
 ## TypeScript
 
@@ -352,6 +357,14 @@ pool.Start(ctx)
 ```
 
 Each worker independently polls, processes messages concurrently (up to the configured concurrency limit), and drains in-flight work on shutdown.
+
+Stopping a worker or cancelling its run stops intake. Every message in an already received batch finishes processing, and the worker waits for its ack or nack attempt before returning. In Go, handler contexts retain their values during this drain; cancelling the run does not cancel handlers or receipt settlement. A deadline on `Stop(ctx)` bounds the caller's wait while draining continues. `Server.Stop()` waits for the drain.
+
+TypeScript adapters receive an optional `AbortSignal` in `consume` and must use it to interrupt pending I/O. A returned batch remains the worker's responsibility even if that signal is aborted. Rust callers must keep polling the worker or pool's start future through shutdown; dropping the future does not perform a graceful drain.
+
+Handler and receipt failures stop intake. A failed handler is nacked, the received batch drains, and the run returns an error with the message ID and route. If nack also fails, the error retains both causes. Processing failures remain visible during cancellation. Concurrent failures return the first observed error; an already observed receive error takes precedence.
+
+The runtime does not retry failed handlers within the same run or delete poison messages. Applications decide when to restart consumers; retry limits and dead-letter routing belong to the queue backend. SQS receipts forward settlement attempts to SQS without caching local success, so failed operations can be attempted again. A failed acknowledgement can leave completed work eligible for redelivery; handlers must tolerate duplicates.
 
 ## Message Format
 
