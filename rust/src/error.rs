@@ -38,6 +38,21 @@ pub enum Error {
         #[source]
         source: prost::DecodeError,
     },
+    #[error("failed to {operation} message {message_id} ({topic}/{action}): {source}")]
+    Delivery {
+        operation: &'static str,
+        message_id: String,
+        topic: String,
+        action: String,
+        #[source]
+        source: Box<Error>,
+    },
+    #[error("{handler}; failed to nack message: {source}")]
+    NackFailed {
+        handler: Box<Error>,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("message already acknowledged")]
     AlreadyAcknowledged,
     #[error("message already nacked")]

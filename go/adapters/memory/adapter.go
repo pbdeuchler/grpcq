@@ -10,184 +10,147 @@ import (
 	pb "github.com/pbdeuchler/grpcq/go/proto"
 )
 
-// Adapter is an in-memory implementation of the QueueAdapter interface.
-// It uses Go channels to simulate queue behavior.
-// This adapter is NOT suitable for production use - it's designed for testing only.
+// Adapter is an in-memory queue for testing and local development.
+// Capacity includes both queued and in-flight messages until acknowledgement.
 type Adapter struct {
 	mu         sync.RWMutex
-	queues     map[string]chan *messageWithReceipt
+	queues     map[string]*queue
 	bufferSize int
 }
 
-// messageWithReceipt pairs a message with its receipt for in-memory handling.
-type messageWithReceipt struct {
-	message *pb.Message
-	receipt *memoryReceipt
+type queue struct {
+	messages []*pb.Message
+	pending  int
 }
 
-// memoryReceipt implements the Receipt interface for in-memory messages.
+type receiptState uint8
+
+const (
+	pending receiptState = iota
+	acked
+	nacked
+)
+
 type memoryReceipt struct {
-	msg      *pb.Message
-	acked    bool
-	nacked   bool
-	mu       sync.Mutex
-	requeueF func(*pb.Message)
+	adapter *Adapter
+	queue   *queue
+	message *pb.Message
+	state   receiptState // protected by adapter.mu
 }
 
-// Ack marks the message as successfully processed.
 func (r *memoryReceipt) Ack(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.acked {
-		return fmt.Errorf("message already acknowledged")
-	}
-	if r.nacked {
-		return fmt.Errorf("message already nacked")
-	}
-
-	r.acked = true
-	return nil
+	return r.settle(ctx, acked)
 }
 
-// Nack marks the message as failed and requeues it.
 func (r *memoryReceipt) Nack(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	return r.settle(ctx, nacked)
+}
 
-	if r.acked {
+func (r *memoryReceipt) settle(ctx context.Context, state receiptState) error {
+	r.adapter.mu.Lock()
+	defer r.adapter.mu.Unlock()
+
+	switch r.state {
+	case acked:
 		return fmt.Errorf("message already acknowledged")
-	}
-	if r.nacked {
+	case nacked:
 		return fmt.Errorf("message already nacked")
-	}
-
-	r.nacked = true
-	if r.requeueF != nil {
-		r.requeueF(r.msg)
-	}
-	return nil
-}
-
-// NewAdapter creates a new in-memory queue adapter.
-// bufferSize determines the capacity of each queue's channel.
-func NewAdapter(bufferSize int) *Adapter {
-	if bufferSize <= 0 {
-		bufferSize = 1000 // Default buffer size
-	}
-	return &Adapter{
-		queues:     make(map[string]chan *messageWithReceipt),
-		bufferSize: bufferSize,
-	}
-}
-
-// Publish sends messages to the specified queue.
-func (a *Adapter) Publish(ctx context.Context, queueName string, messages ...*pb.Message) error {
-	if len(messages) == 0 {
-		return nil
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Ensure queue exists
-	if a.queues[queueName] == nil {
-		// Create a buffered channel with configured capacity
-		a.queues[queueName] = make(chan *messageWithReceipt, a.bufferSize)
+	if state == acked {
+		r.queue.pending--
+	} else {
+		r.queue.messages = append(r.queue.messages, r.message)
 	}
-
-	queue := a.queues[queueName]
-
-	if len(messages) > cap(queue)-len(queue) {
-		return fmt.Errorf("queue %s is full", queueName)
-	}
-
-	// Safe to send without select: the capacity check above guarantees enough
-	// room while we hold the lock, so these sends will never block.
-	for _, msg := range messages {
-		queue <- &messageWithReceipt{message: msg}
-	}
-
+	r.state = state
 	return nil
 }
 
-// Consume retrieves messages from the specified queue.
+// NewAdapter creates a queue with space for bufferSize unacknowledged messages
+// per queue. Non-positive sizes use the default capacity of 1000.
+func NewAdapter(bufferSize int) *Adapter {
+	if bufferSize <= 0 {
+		bufferSize = 1000
+	}
+	return &Adapter{queues: make(map[string]*queue), bufferSize: bufferSize}
+}
+
+// Publish accepts the entire batch or returns an error without accepting any.
+func (a *Adapter) Publish(ctx context.Context, queueName string, messages ...*pb.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	q := a.getOrCreateQueue(queueName)
+	if len(messages) > a.bufferSize-q.pending {
+		return fmt.Errorf("queue %s is full", queueName)
+	}
+	q.messages = append(q.messages, messages...)
+	q.pending += len(messages)
+	return nil
+}
+
+// Consume retrieves messages without releasing their capacity reservations.
 func (a *Adapter) Consume(ctx context.Context, queueName string, maxBatch int) (*core.ConsumeResult, error) {
 	a.mu.Lock()
-	queue := a.queues[queueName]
-	if queue == nil {
-		// Create empty queue if it doesn't exist
-		a.queues[queueName] = make(chan *messageWithReceipt, a.bufferSize)
-		queue = a.queues[queueName]
+	defer a.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	a.mu.Unlock()
-
-	items := make([]core.MessageItem, 0, maxBatch)
-
-	// Try to consume up to maxBatch messages without blocking
-	for i := 0; i < maxBatch; i++ {
-		select {
-		case msgWithReceipt := <-queue:
-			// Create receipt with requeue function
-			receipt := &memoryReceipt{
-				msg: msgWithReceipt.message,
-				requeueF: func(msg *pb.Message) {
-					// Requeue the message (best effort)
-					select {
-					case queue <- &messageWithReceipt{message: msg}:
-					default:
-						// Queue full, message lost (acceptable for testing)
-					}
-				},
-			}
-
-			items = append(items, core.MessageItem{
-				Message: msgWithReceipt.message,
-				Receipt: receipt,
-			})
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-			// No more messages available
-			return &core.ConsumeResult{Items: items}, nil
-		}
+	if maxBatch < 1 {
+		maxBatch = 1
 	}
-
+	q := a.getOrCreateQueue(queueName)
+	count := min(maxBatch, len(q.messages))
+	items := make([]core.MessageItem, 0, count)
+	for _, message := range q.messages[:count] {
+		items = append(items, core.MessageItem{
+			Message: message,
+			Receipt: &memoryReceipt{adapter: a, queue: q, message: message},
+		})
+	}
+	clear(q.messages[:count])
+	q.messages = q.messages[count:]
 	return &core.ConsumeResult{Items: items}, nil
 }
 
-// QueueDepth returns the number of messages currently in the queue.
-// This is useful for testing.
+// QueueDepth returns the number of messages available for consumption.
 func (a *Adapter) QueueDepth(queueName string) int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-
-	queue := a.queues[queueName]
-	if queue == nil {
-		return 0
+	if q := a.queues[queueName]; q != nil {
+		return len(q.messages)
 	}
-
-	return len(queue)
+	return 0
 }
 
-// Clear removes all messages from all queues.
-// This is useful for testing.
+// Clear discards queued messages. In-flight messages retain their reservations
+// and can still be acknowledged or returned to their queues.
 func (a *Adapter) Clear() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	for name, queue := range a.queues {
-		// Drain the channel
-		for len(queue) > 0 {
-			<-queue
-		}
-		// Recreate the channel
-		a.queues[name] = make(chan *messageWithReceipt, a.bufferSize)
+	for _, q := range a.queues {
+		q.pending -= len(q.messages)
+		q.messages = nil
 	}
 }
 
-// Ensure Adapter implements QueueAdapter
+// getOrCreateQueue requires a.mu to be held for writing.
+func (a *Adapter) getOrCreateQueue(name string) *queue {
+	q := a.queues[name]
+	if q == nil {
+		q = &queue{}
+		a.queues[name] = q
+	}
+	return q
+}
+
 var _ core.QueueAdapter = (*Adapter)(nil)

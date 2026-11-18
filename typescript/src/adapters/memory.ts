@@ -15,10 +15,16 @@ const enum ReceiptState {
   Nacked = 2,
 }
 
+interface Queue {
+  messages: Message[];
+  pending: number;
+}
+
 export class MemoryAdapter implements QueueAdapter {
-  private readonly queues = new Map<string, Message[]>();
+  private readonly queues = new Map<string, Queue>();
   private readonly bufferSize: number;
 
+  /** Capacity includes queued and in-flight messages until acknowledgement. */
   constructor(bufferSize = 1000) {
     this.bufferSize = bufferSize > 0 ? bufferSize : 1000;
   }
@@ -27,46 +33,54 @@ export class MemoryAdapter implements QueueAdapter {
     if (messages.length === 0) return;
 
     const queue = this.getOrCreateQueue(queueName);
-    if (queue.length + messages.length > this.bufferSize) {
+    if (messages.length > this.bufferSize - queue.pending) {
       throw GrpcqError.queueFull(queueName);
     }
 
-    queue.push(...messages.map((m) => structuredClone(m)));
+    queue.messages.push(...messages.map((m) => structuredClone(m)));
+    queue.pending += messages.length;
   }
 
-  async consume(queueName: string, maxBatch: number): Promise<ConsumeResult> {
+  async consume(
+    queueName: string,
+    maxBatch: number,
+    signal?: AbortSignal,
+  ): Promise<ConsumeResult> {
+    signal?.throwIfAborted();
     const queue = this.getOrCreateQueue(queueName);
     const limit = Math.max(maxBatch, 1);
-    const drained = queue.splice(0, limit);
+    const drained = queue.messages.splice(0, limit);
 
     const items: MessageItem[] = drained.map((message) => ({
       message,
-      receipt: this.createReceipt(queueName, message),
+      receipt: this.createReceipt(queue, message),
     }));
 
     return { items };
   }
 
   queueDepth(queueName: string): number {
-    return this.queues.get(queueName)?.length ?? 0;
+    return this.queues.get(queueName)?.messages.length ?? 0;
   }
 
+  /** Discard queued messages, preserving outstanding receipts and their capacity. */
   clear(): void {
     for (const queue of this.queues.values()) {
-      queue.length = 0;
+      queue.pending -= queue.messages.length;
+      queue.messages.length = 0;
     }
   }
 
-  private getOrCreateQueue(queueName: string): Message[] {
+  private getOrCreateQueue(queueName: string): Queue {
     let queue = this.queues.get(queueName);
     if (!queue) {
-      queue = [];
+      queue = { messages: [], pending: 0 };
       this.queues.set(queueName, queue);
     }
     return queue;
   }
 
-  private createReceipt(queueName: string, message: Message): Receipt {
+  private createReceipt(queue: Queue, message: Message): Receipt {
     let state = ReceiptState.Pending;
 
     return {
@@ -75,17 +89,14 @@ export class MemoryAdapter implements QueueAdapter {
           throw GrpcqError.alreadyAcknowledged();
         if (state === ReceiptState.Nacked) throw GrpcqError.alreadyNacked();
         state = ReceiptState.Acked;
+        queue.pending--;
       },
       nack: async () => {
         if (state === ReceiptState.Acked)
           throw GrpcqError.alreadyAcknowledged();
         if (state === ReceiptState.Nacked) throw GrpcqError.alreadyNacked();
+        queue.messages.push(structuredClone(message));
         state = ReceiptState.Nacked;
-
-        const queue = this.getOrCreateQueue(queueName);
-        if (queue.length < this.bufferSize) {
-          queue.push(structuredClone(message));
-        }
       },
     };
   }

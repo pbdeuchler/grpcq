@@ -66,13 +66,33 @@ impl Default for Config {
     }
 }
 
-#[derive(Default)]
-struct GrpcqServiceGenerator;
+struct GrpcqServiceGenerator {
+    #[cfg(feature = "tonic")]
+    tonic: Box<dyn prost_build::ServiceGenerator>,
+}
+
+impl Default for GrpcqServiceGenerator {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "tonic")]
+            tonic: tonic_build::configure()
+                .build_client(false)
+                .service_generator(),
+        }
+    }
+}
 
 impl prost_build::ServiceGenerator for GrpcqServiceGenerator {
     fn generate(&mut self, service: prost_build::Service, buf: &mut String) {
+        #[cfg(feature = "tonic")]
+        self.tonic.generate(service.clone(), buf);
         buf.push_str(&generate_service_modules(&service).to_string());
         buf.push('\n');
+    }
+
+    fn finalize(&mut self, _buf: &mut String) {
+        #[cfg(feature = "tonic")]
+        self.tonic.finalize(_buf);
     }
 }
 
@@ -93,7 +113,7 @@ fn generate_service_modules(service: &prost_build::Service) -> TokenStream {
 fn generate_consumer_module(service: &prost_build::Service) -> TokenStream {
     #[cfg(feature = "tonic")]
     {
-        return generate_tonic_consumer_module(service);
+        generate_tonic_consumer_module(service)
     }
 
     #[cfg(not(feature = "tonic"))]
@@ -187,20 +207,8 @@ fn generate_tonic_consumer_module(service: &prost_build::Service) -> TokenStream
     let service_trait = format_ident!("{}", service.name);
     let consumer_struct = format_ident!("{}Consumer", service.name);
     let module_name = format_ident!("{}_consumer", service.name.to_snake_case());
+    let server_module = format_ident!("{}_server", service.name.to_snake_case());
     let service_name = LitStr::new(&fully_qualified_service_name(service), Span::call_site());
-
-    let trait_methods = service.methods.iter().map(|method| {
-        let method_name = format_ident!("{}", method.name);
-        let input_type = parse_type(&method.input_type);
-        let output_type = parse_type(&method.output_type);
-
-        quote! {
-            async fn #method_name(
-                &self,
-                req: grpcq::tonic::Request<#input_type>,
-            ) -> std::result::Result<grpcq::tonic::Response<#output_type>, grpcq::tonic::Status>;
-        }
-    });
 
     let register_methods = service.methods.iter().map(|method| {
         let method_name = format_ident!("{}", method.name);
@@ -235,10 +243,7 @@ fn generate_tonic_consumer_module(service: &prost_build::Service) -> TokenStream
         pub mod #module_name {
             use super::*;
 
-            #[grpcq::tonic::async_trait]
-            pub trait #service_trait: Send + Sync + 'static {
-                #(#trait_methods)*
-            }
+            pub use super::#server_module::#service_trait;
 
             pub struct #consumer_struct<T: #service_trait> {
                 inner: std::sync::Arc<T>,

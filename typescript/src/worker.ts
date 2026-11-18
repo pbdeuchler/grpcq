@@ -23,28 +23,38 @@ async function processMessage(
 ): Promise<void> {
   try {
     await registry.handle(item.message);
-    await item.receipt.ack().catch(() => {});
-  } catch {
-    await item.receipt.nack().catch(() => {});
+  } catch (handlerError) {
+    let cause = handlerError;
+    try {
+      await item.receipt.nack();
+    } catch (nackError) {
+      cause = new AggregateError(
+        [handlerError, nackError],
+        `${handlerError}; failed to nack message: ${nackError}`,
+      );
+    }
+    throw GrpcqError.messageProcessing(item.message, "handle", cause);
+  }
+  try {
+    await item.receipt.ack();
+  } catch (cause) {
+    throw GrpcqError.messageProcessing(item.message, "ack", cause);
   }
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<"timeout" | "abort"> {
-  if (signal?.aborted) return Promise.resolve("abort");
-  if (ms <= 0) return Promise.resolve("timeout");
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
 
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve("timeout");
-    }, ms);
+    const timer = setTimeout(finish, ms);
 
-    function onAbort(): void {
+    function finish(): void {
       clearTimeout(timer);
-      resolve("abort");
+      signal.removeEventListener("abort", finish);
+      resolve();
     }
 
-    signal?.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", finish, { once: true });
   });
 }
 
@@ -52,18 +62,17 @@ class InFlightPool {
   private active = new Set<Promise<void>>();
   private resolveWaiter: (() => void) | null = null;
 
+  constructor(private readonly onFailure: (error: unknown) => void) {}
+
   get size(): number {
     return this.active.size;
   }
 
   add(promise: Promise<void>): void {
-    const tracked = promise.finally(() => {
+    const tracked = promise.catch(this.onFailure).finally(() => {
       this.active.delete(tracked);
-      if (this.resolveWaiter) {
-        const resolve = this.resolveWaiter;
-        this.resolveWaiter = null;
-        resolve();
-      }
+      this.resolveWaiter?.();
+      this.resolveWaiter = null;
     });
     this.active.add(tracked);
   }
@@ -113,7 +122,11 @@ export class Worker {
     this.state = WorkerState.Running;
 
     try {
-      await this.run(signal);
+      const intake = signal
+        ? AbortSignal.any([signal, this.stopController.signal])
+        : this.stopController.signal;
+      await this.run(intake);
+      if (signal?.aborted) throw GrpcqError.cancelled();
     } finally {
       this.state = WorkerState.Stopped;
       this.finishedResolve?.();
@@ -126,91 +139,53 @@ export class Worker {
     await this.finishedPromise;
   }
 
-  private isStopping(externalSignal?: AbortSignal): boolean {
-    return this.stopController.signal.aborted || (externalSignal?.aborted ?? false);
-  }
+  private async run(signal: AbortSignal): Promise<void> {
+    let failure: GrpcqError | null = null;
+    const inFlight = new InFlightPool((error) => {
+      failure ??= error instanceof GrpcqError
+        ? error
+        : GrpcqError.other(String(error), error);
+      this.stopController.abort();
+    });
+    let outcome: GrpcqError | null = null;
+    try {
+      while (!signal.aborted) {
+        while (inFlight.size >= this.concurrency) await inFlight.waitForOne();
+        if (signal.aborted) break;
 
-  private async run(externalSignal?: AbortSignal): Promise<void> {
-    const inFlight = new InFlightPool();
-    let cancelError: GrpcqError | null = null;
-
-    const loop = async (): Promise<void> => {
-      while (!this.isStopping(externalSignal)) {
-        // Wait for concurrency slot
-        while (inFlight.size >= this.concurrency) {
-          if (this.isStopping(externalSignal)) break;
-          await inFlight.waitForOne();
-        }
-
-        if (this.stopController.signal.aborted) break;
-        if (externalSignal?.aborted) {
-          cancelError = GrpcqError.cancelled();
-          break;
-        }
-
-        // Consume batch
-        let result;
-        try {
-          result = await this.adapter.consume(this.queueName, this.maxBatch);
-        } catch (err) {
-          cancelError =
-            err instanceof GrpcqError
-              ? err
-              : GrpcqError.other(String(err), err);
-          break;
-        }
-
+        const result = await this.adapter.consume(
+          this.queueName,
+          this.maxBatch,
+          signal,
+        );
         if (result.items.length === 0) {
-          // Wait for poll interval, but break early if a stop/cancel arrives
-          // or an inflight task completes
-          if (inFlight.size > 0) {
-            const raceResult = await Promise.race([
-              inFlight.waitForOne().then(() => "inflight" as const),
-              delay(this.pollIntervalMs, this.stopController.signal),
-            ]);
-            if (raceResult === "abort" && !this.stopController.signal.aborted) {
-              // External signal won the race
-            }
-          } else {
-            const result = await delay(
-              this.pollIntervalMs,
-              this.stopController.signal,
-            );
-            if (result === "abort" && externalSignal?.aborted) {
-              cancelError = GrpcqError.cancelled();
-              break;
-            }
-          }
+          await delay(this.pollIntervalMs, signal);
           continue;
         }
 
-        // Dispatch messages
+        // Ownership transfers on receive; finish this batch even during shutdown.
         for (const item of result.items) {
-          while (inFlight.size >= this.concurrency) {
-            if (this.isStopping(externalSignal)) break;
-            await inFlight.waitForOne();
-          }
-
-          if (this.isStopping(externalSignal)) break;
-
+          while (inFlight.size >= this.concurrency) await inFlight.waitForOne();
           inFlight.add(processMessage(this.registry, item));
         }
       }
-    };
-
-    await loop();
-
-    // Drain all in-flight work before returning
-    await inFlight.drain();
-
-    if (cancelError) throw cancelError;
+    } catch (error) {
+      if (!signal.aborted) {
+        outcome = error instanceof GrpcqError
+          ? error
+          : GrpcqError.other(String(error), error);
+      }
+    } finally {
+      await inFlight.drain();
+    }
+    if (outcome) throw outcome;
+    if (failure) throw failure;
   }
 }
 
 export class WorkerPool {
   private readonly workers: Worker[];
   private state = WorkerState.Idle;
-  private stopController = new AbortController();
   private finishedResolve: (() => void) | null = null;
   private finishedPromise: Promise<void>;
 
@@ -236,39 +211,31 @@ export class WorkerPool {
     }
     this.state = WorkerState.Running;
 
-    // Combine external signal with internal stop
-    const combinedController = new AbortController();
-    const onExternalAbort = (): void => combinedController.abort();
-    const onStopAbort = (): void => combinedController.abort();
-    signal?.addEventListener("abort", onExternalAbort, { once: true });
-    this.stopController.signal.addEventListener("abort", onStopAbort, {
-      once: true,
-    });
-
-    try {
-      const results = await Promise.allSettled(
-        this.workers.map((w) => w.start(combinedController.signal)),
-      );
-
-      // If any worker failed, stop all and propagate first error
-      const firstError = results.find(
-        (r): r is PromiseRejectedResult => r.status === "rejected",
-      );
-
-      if (firstError) {
-        await this.stopAll();
-        throw firstError.reason;
+    let failure: unknown;
+    const tasks = this.workers.map(async (worker) => {
+      try {
+        await worker.start(signal);
+      } catch (error) {
+        if (!(error instanceof GrpcqError && error.code === "CANCELLED")) {
+          failure ??= error;
+        }
+        throw error;
       }
+    });
+    try {
+      await Promise.all(tasks);
+    } catch (error) {
+      // Stop siblings as soon as one fails, then drain before returning the error.
+      await this.stopAll();
+      await Promise.allSettled(tasks);
+      throw failure ?? error;
     } finally {
-      signal?.removeEventListener("abort", onExternalAbort);
-      this.stopController.signal.removeEventListener("abort", onStopAbort);
       this.state = WorkerState.Stopped;
       this.finishedResolve?.();
     }
   }
 
   async stop(): Promise<void> {
-    this.stopController.abort();
     await this.stopAll();
     if (this.state === WorkerState.Idle) return;
     await this.finishedPromise;

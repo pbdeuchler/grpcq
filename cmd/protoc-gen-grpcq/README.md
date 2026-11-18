@@ -94,5 +94,5 @@ See [go/examples/userservice](../../go/examples/userservice/)
 ## Limitations
 
 - Fire-and-forget only: generated producer methods return `error` because no response path exists yet
-- Unary RPCs only (no streaming)
+- Unary RPCs only; generation fails with the service and method name if a streaming RPC is present
 - No interceptor support

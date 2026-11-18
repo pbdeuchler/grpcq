@@ -16,11 +16,18 @@ pub struct Adapter {
 }
 
 struct Inner {
-    queues: Mutex<HashMap<String, VecDeque<Message>>>,
+    queues: Mutex<HashMap<String, Queue>>,
     buffer_size: usize,
 }
 
+#[derive(Default)]
+struct Queue {
+    messages: VecDeque<Message>,
+    pending: usize,
+}
+
 impl Adapter {
+    /// Capacity includes queued and in-flight messages until acknowledgement.
     pub fn new(buffer_size: usize) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -36,9 +43,12 @@ impl Adapter {
             .queues
             .lock()
             .expect("memory adapter lock poisoned");
-        queues.get(queue_name).map_or(0, VecDeque::len)
+        queues
+            .get(queue_name)
+            .map_or(0, |queue| queue.messages.len())
     }
 
+    /// Discard queued messages, preserving outstanding receipts and their capacity.
     pub fn clear(&self) {
         let mut queues = self
             .inner
@@ -46,7 +56,8 @@ impl Adapter {
             .lock()
             .expect("memory adapter lock poisoned");
         for queue in queues.values_mut() {
-            queue.clear();
+            queue.pending -= queue.messages.len();
+            queue.messages.clear();
         }
     }
 }
@@ -69,13 +80,14 @@ impl QueueAdapter for Adapter {
                 .expect("memory adapter lock poisoned");
             let queue = queues.entry(queue_name.to_string()).or_default();
 
-            if queue.len() + messages.len() > self.inner.buffer_size {
+            if messages.len() > self.inner.buffer_size - queue.pending {
                 return Err(Error::QueueFull {
                     queue_name: queue_name.to_string(),
                 });
             }
 
-            queue.extend(messages.iter().cloned());
+            queue.messages.extend(messages.iter().cloned());
+            queue.pending += messages.len();
             Ok(())
         }
         .boxed()
@@ -94,11 +106,11 @@ impl QueueAdapter for Adapter {
                     .lock()
                     .expect("memory adapter lock poisoned");
                 let queue = queues.entry(queue_name.to_string()).or_default();
-                let limit = max_batch.max(1);
+                let limit = max_batch.max(1).min(queue.messages.len());
                 let mut drained = Vec::with_capacity(limit);
 
                 for _ in 0..limit {
-                    match queue.pop_front() {
+                    match queue.messages.pop_front() {
                         Some(message) => drained.push(message),
                         None => break,
                     }
@@ -149,6 +161,15 @@ impl Receipt for MemoryReceipt {
             let mut state = self.state.lock().expect("memory receipt lock poisoned");
             match *state {
                 ReceiptState::Pending => {
+                    let mut queues = self
+                        .inner
+                        .queues
+                        .lock()
+                        .expect("memory adapter lock poisoned");
+                    queues
+                        .get_mut(&self.queue_name)
+                        .expect("receipt queue exists")
+                        .pending -= 1;
                     *state = ReceiptState::Acked;
                     Ok(())
                 }
@@ -161,15 +182,11 @@ impl Receipt for MemoryReceipt {
 
     fn nack(&self) -> BoxFuture<'_, Result<()>> {
         async move {
-            {
-                let mut state = self.state.lock().expect("memory receipt lock poisoned");
-                match *state {
-                    ReceiptState::Pending => {
-                        *state = ReceiptState::Nacked;
-                    }
-                    ReceiptState::Acked => return Err(Error::AlreadyAcknowledged),
-                    ReceiptState::Nacked => return Err(Error::AlreadyNacked),
-                }
+            let mut state = self.state.lock().expect("memory receipt lock poisoned");
+            match *state {
+                ReceiptState::Pending => {}
+                ReceiptState::Acked => return Err(Error::AlreadyAcknowledged),
+                ReceiptState::Nacked => return Err(Error::AlreadyNacked),
             }
 
             let mut queues = self
@@ -177,10 +194,11 @@ impl Receipt for MemoryReceipt {
                 .queues
                 .lock()
                 .expect("memory adapter lock poisoned");
-            let queue = queues.entry(self.queue_name.clone()).or_default();
-            if queue.len() < self.inner.buffer_size {
-                queue.push_back(self.message.clone());
-            }
+            let queue = queues
+                .get_mut(&self.queue_name)
+                .expect("receipt queue exists");
+            queue.messages.push_back(self.message.clone());
+            *state = ReceiptState::Nacked;
 
             Ok(())
         }

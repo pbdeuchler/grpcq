@@ -4,7 +4,12 @@ import type { Message } from "./message.js";
 
 export interface QueueAdapter {
   publish(queueName: string, messages: Message[]): Promise<void>;
-  consume(queueName: string, maxBatch: number): Promise<ConsumeResult>;
+  /** Abort pending I/O when signalled. A returned batch transfers ownership to the worker. */
+  consume(
+    queueName: string,
+    maxBatch: number,
+    signal?: AbortSignal,
+  ): Promise<ConsumeResult>;
 }
 
 export interface Receipt {

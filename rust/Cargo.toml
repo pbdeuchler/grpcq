@@ -5,6 +5,17 @@ edition = "2021"
 license = "MIT"
 description = "Runtime-independent Rust runtime and adapters for grpcq"
 
+[workspace]
+members = [
+    ".",
+    "grpcq-build",
+    "examples/typed-greeter",
+    "grpcq-build/tests/fixtures/consumer-fixture",
+    "grpcq-build/tests/fixtures/tonic-fixture",
+]
+default-members = [".", "grpcq-build"]
+resolver = "2"
+
 [features]
 default = []
 sqs = ["dep:aws-sdk-sqs", "dep:base64"]
@@ -23,4 +34,5 @@ tonic = { version = "0.12", optional = true, default-features = false, features 
 uuid = { version = "1.18", features = ["fast-rng", "v4"] }
 
 [dev-dependencies]
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
 futures = { version = "0.3", features = ["executor"] }
